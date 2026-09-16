@@ -23,10 +23,13 @@
     "backup": "node --disable-warning=ExperimentalWarning server/scripts/backup.js",
     "maintenance": "node --disable-warning=ExperimentalWarning server/scripts/maintenance.js"
   },
+  "dependencies": {
+    "express": "^5.1.0"
+  },
   "devDependencies": {
     "concurrently": "^9.1.2",
-    "jsdom": "^26.1.0",
-    "esbuild": "^0.21.5"
+    "esbuild": "^0.21.5",
+    "jsdom": "^26.1.0"
   },
   "engines": {
     "node": ">=22.5.0"

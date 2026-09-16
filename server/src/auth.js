@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { db, firstRow, exec, uid, nowIso } from './db/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SECRET_FILE = path.join(__dirname, 'data', '.jwt-secret');
+const SECRET_FILE = process.env.KASIR_SECRET_FILE || (process.env.VERCEL ? path.join('/tmp', '.jwt-secret') : path.join(__dirname, 'data', '.jwt-secret'));
 
 function loadSecret() {
   if (process.env.KASIR_JWT_SECRET) return process.env.KASIR_JWT_SECRET;
@@ -19,8 +19,12 @@ function loadSecret() {
     return fs.readFileSync(SECRET_FILE, 'utf8').trim();
   } catch {
     const secret = crypto.randomBytes(32).toString('hex');
-    fs.mkdirSync(path.dirname(SECRET_FILE), { recursive: true });
-    fs.writeFileSync(SECRET_FILE, secret, { mode: 0o600 });
+    try {
+      fs.mkdirSync(path.dirname(SECRET_FILE), { recursive: true });
+      fs.writeFileSync(SECRET_FILE, secret, { mode: 0o600 });
+    } catch {
+      // In read-only or serverless environments where writing fails, just use generated secret
+    }
     return secret;
   }
 }

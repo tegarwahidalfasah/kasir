@@ -85,6 +85,31 @@ npm run maintenance -- status              # ukuran DB, cadangan terakhir, stok 
 npm run maintenance -- restore <berkas> --yes
 ```
 
+## Deployment ke Vercel
+
+Repositori ini telah dikonfigurasi penuh untuk deploy langsung ke **Vercel** (Vite SPA + Express Serverless API):
+
+1. **Push ke Git / GitHub**:
+   ```bash
+   git add .
+   git commit -m "Konfigurasi deployment Vercel"
+   git push
+   ```
+
+2. **Deploy di Vercel Dashboard**:
+   - Buka [vercel.com](https://vercel.com) dan pilih **Add New... → Project**.
+   - Impor repositori ini.
+   - Konfigurasi otomatis terbaca dari `vercel.json` (`npm run build` → `client/dist` dan API di `/api/index.js`).
+   - Klik **Deploy**.
+
+3. **Deploy via Vercel CLI (Alternatif)**:
+   ```bash
+   npx vercel
+   ```
+
+> **Catatan Serverless:** Di lingkungan Vercel, API berjalan sebagai Serverless Functions dengan SQLite di `/tmp`. Saat cold-start pertama kali, sistem otomatis menginisialisasi skema dan data demo (*Kopi Senja*, pengguna `budi`, `dewi`, dsb.) sehingga aplikasi langsung siap dicoba.
+
+
 ## Struktur proyek
 
 ```
