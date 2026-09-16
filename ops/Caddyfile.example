@@ -1,0 +1,36 @@
+# ===========================================================================
+#  Caddyfile — satu-satunya opsi TLS otomatis (Let's Encrypt).
+#  Let's Encrypt TIDAK bisa menerbitkan sertifikat untuk nama host .local / LAN,
+#  jadi pakai ini dengan domain publik (atau subdomain berbayar/free-SSL DNS-01).
+#  Untuk jaringan lokal tanpa domain, lihat catatan "HTTPS lokal" di
+#  docs/09-deployment-dan-maintenance.md (Caddy `tls internal` atau self-signed).
+# ===========================================================================
+
+kasir.tokoanda.com {
+	# aplikasi melayani API + SPA dari satu port
+	reverse_proxy /api/* 127.0.0.1:4000
+	reverse_proxy 127.0.0.1:4000 {
+		header_up X-Forwarded-Prefix /
+	}
+
+	encode zstd gzip
+
+	# struk/logo = data URL (base64) -> jangan dibatasi terlalu ketat
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+
+	# berkas cadangan tidak pernah dilayani lewat web
+	respond /.well-known/* 404 {
+	}
+
+	access_log /var/log/caddy/kasir-access.log
+}
+
+# Catatan: pembatasan laju login dilakukan aplikasi (5 percobaan/60 s/IP via
+# tooManyAttempts + loginGuard). Bila ingin lapisan tambahan di proxy, pasang
+# plugin rate_limit atau `@auth path /api/auth/login` + `rate_limit`.
