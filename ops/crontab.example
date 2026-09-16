@@ -1,0 +1,25 @@
+# ===========================================================================
+#  crontab root (atau user `kasir`) — lihat docs/09-deployment-dan-maintenance.md
+#  Pasang:  crontab -e  lalu tempel baris di bawah (zona waktu server = Asia/Jakarta)
+# ===========================================================================
+CRON_TZ=Asia/Jakarta
+PATH=/usr/local/bin:/usr/bin:/bin
+MAILTO=ops@example.com
+APP_DIR=/opt/kasir
+KASIR_DATA_DIR=/var/lib/kasir
+
+# 02:15 — cadangan harian + verifikasi (rotasi 14 berkas terakhir)
+15 2 * * *    cd $APP_DIR && ./ops/maintenance.sh backup --keep=14 --verify >> /var/log/kasir-maintenance.log 2>&1
+
+# Setiap 5 menit — cek layanan; catat ke log bila gagal (untuk monitoring/dashboards)
+*/5 * * * *   cd $APP_DIR && ./ops/maintenance.sh health >> /var/log/kasir-health.log 2>&1
+
+# Rabu 03:20 — ringkas log audit/alert lama + kompres DB (di luar jam sibuk)
+20 3 * * 3    cd $APP_DIR && ./ops/maintenance.sh prune --yes --audit-days=180 --alert-days=90 >> /var/log/kasir-maintenance.log 2>&1
+35 3 * * 3    cd $APP_DIR && ./ops/maintenance.sh vacuum >> /var/log/kasir-maintenance.log 2>&1
+
+# Jumat 03:00 — salin cadangan mingguan ke penyimpanan luar (rsync example)
+0 3 * * 5     rsync -az --timeout=60 /var/lib/kasir/backups/ backup@files.example.com:kasir/ >> /var/log/kasir-maintenance.log 2>&1
+
+# Bulanan, Minggu 04:00 — latihan pemulihan di pangkalan data sementara (uji cadangan benar-benar bisa dipakai)
+0 4 1 * *     cd $APP_DIR && KASIR_DATA_DIR=/tmp/kasir-restore-drill ./ops/maintenance.sh restore "$(ls -1t /var/lib/kasir/backups/*.sqlite | head -1)" --yes >> /var/log/kasir-maintenance.log 2>&1

@@ -1,0 +1,34 @@
+{
+  "name": "kasir",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Kasir / POS multi-cabang dengan stok bahan baku otomatis (BOM), RBAC, dan kustomisasi toko",
+  "type": "module",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,client -c cyan,magenta \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "node --watch --disable-warning=ExperimentalWarning server/src/index.js",
+    "dev:client": "npm run dev -w @kasir/client",
+    "build": "npm run build -w @kasir/client",
+    "start": "node --disable-warning=ExperimentalWarning server/src/index.js",
+    "seed": "node --disable-warning=ExperimentalWarning server/scripts/seed.js",
+    "reset": "node --disable-warning=ExperimentalWarning server/scripts/reset.js",
+    "test": "node --disable-warning=ExperimentalWarning server/scripts/test.js",
+    "check": "npm run test && npm run test:ui && npm run build",
+    "test:ui": "node --disable-warning=ExperimentalWarning client/tests/ui-smoke.mjs",
+    "test:qa": "node --disable-warning=ExperimentalWarning server/scripts/qa-simulasi.js",
+    "backup": "node --disable-warning=ExperimentalWarning server/scripts/backup.js",
+    "maintenance": "node --disable-warning=ExperimentalWarning server/scripts/maintenance.js"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "jsdom": "^26.1.0",
+    "esbuild": "^0.21.5"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}

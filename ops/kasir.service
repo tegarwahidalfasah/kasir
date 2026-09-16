@@ -1,0 +1,47 @@
+# ===========================================================================
+#  systemd unit — salin ke /etc/systemd/system/kasir.service
+#  sudo systemctl daemon-reload && sudo systemctl enable --now kasir
+# ===========================================================================
+[Unit]
+Description=Kasir POS (API + SPA)
+Documentation=file:/opt/kasir/docs/09-deployment-dan-maintenance.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kasir
+Group=kasir
+WorkingDirectory=/opt/kasir
+
+# berkas lingkungan: KASIR_JWT_SECRET, PORT, KASIR_DATA_DIR, NODE_ENV
+EnvironmentFile=/etc/kasir/kasir.env
+Environment=NODE_ENV=production
+Environment=PORT=4000
+Environment=KASIR_DATA_DIR=/var/lib/kasir
+
+ExecStart=/usr/bin/node server/src/index.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+
+# satu-satunya hal yang boleh ditulis proses
+ReadWritePaths=/var/lib/kasir
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=true
+MemoryDenyWriteExecute=false
+LimitNOFILE=8192
+
+# log ke journald: journalctl -u kasir -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kasir
+
+[Install]
+WantedBy=multi-user.target

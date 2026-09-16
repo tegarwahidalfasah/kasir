@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+server/data/
+server/src/data/
+client/dist/
+client/tests/.cache/
+*.log
+*.db
+*.db-wal
+*.db-shm
+.env
+.env.local
+.DS_Store
+coverage/
