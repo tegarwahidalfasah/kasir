@@ -4,7 +4,7 @@
 import express from 'express';
 import { tx, allRows, firstRow, exec, loadSetting, uid } from '../db/index.js';
 import { authenticate, requirePerm } from '../middleware/index.js';
-import { createSale, listSales, getSale, voidSale, refundLine, catalogFor, activeRules } from '../sales.js';
+import { createSale, listSales, getSale, voidSale, refundLine, catalogFor, activeRules, resolveAddons } from '../sales.js';
 import { recipesFor, bomPreview, rawCapacity, planStockImpact } from '../bom.js';
 import { calculatePrice } from '../pricing.js';
 import { DEFAULTS } from '../config.js';
@@ -39,7 +39,7 @@ router.get(MOUNT + '/pos/catalog', auth(['item.view', 'sale.create', 'stock.view
 router.post(MOUNT + '/pos/preview', auth('sale.create'), http((req, res) => {
   const storeId = req.storeId;
   const catalog = catalogFor(storeId);
-  const lines = normalizeLines(req.body?.lines);
+  const lines = normalizeLines(req.body?.lines, catalog);
   const recipes = recipesFor(lines.map((l) => l.item_id));
   const taxCfg = loadSetting(storeId, 'tax', DEFAULTS.tax);
   const { taxes, discounts, methods } = activeRules(storeId);
@@ -66,7 +66,7 @@ router.post(MOUNT + '/sales', auth('sale.create'), http((req, res) => {
     const dup = firstRow(`SELECT id, invoice_no, status FROM transactions WHERE store_id = ? AND external_ref = ?`, storeId, externalRef);
     if (dup) return res.status(200).json({ ...getSale(storeId, dup.id), duplicated: true });
   }
-  const lines = normalizeLines(req.body?.lines);
+  const lines = normalizeLines(req.body?.lines, catalogFor(storeId));
   const result = tx(() => createSale({
     storeId,
     branchId: req.branchId,
@@ -121,7 +121,7 @@ router.post(MOUNT + '/pos/hold', auth('sale.hold'), http((req, res) => {
     `INSERT INTO transactions (id, store_id, branch_id, invoice_no, cashier_id, status, customer_name, note, grand_total, created_at)
      VALUES (?,?,?,?,?, 'open', ?, ?, 0, datetime('now'))`,
     id, req.storeId, req.branchId, name, req.user.id, req.body?.customer_name || null,
-    JSON.stringify({ lines: normalizeLines(req.body?.lines), selected: req.body?.selected_discount_ids || [] })
+    JSON.stringify({ lines: normalizeLines(req.body?.lines, catalogFor(storeId)), selected: req.body?.selected_discount_ids || [] })
   );
   res.status(201).json({ id, invoice_no: name });
 }));
@@ -140,7 +140,7 @@ router.delete(MOUNT + '/pos/hold/:id', auth('sale.hold'), http((req, res) => {
 }));
 
 // ------------------------------------------------------------------- helper
-function normalizeLines(lines) {
+function normalizeLines(lines, catalog = null) {
   if (!Array.isArray(lines)) throw new AppError(400, 'Format keranjang tidak valid');
   return lines
     .map((l) => ({
@@ -148,7 +148,8 @@ function normalizeLines(lines) {
       qty: Math.max(0, Number(l.qty) || 0),
       unit_price: l.unit_price != null ? Number(l.unit_price) : null,
       discount: Number(l.discount) || 0,
-      addons: Array.isArray(l.addons) ? l.addons : [],
+      // addon diverifikasi terhadap item_addons di DB (price_delta & bahan dari server, bukan klien)
+      addons: catalog ? resolveAddons(catalog, l.item_id, l.addons) : [],
       selected_optional_raws: Array.isArray(l.selected_optional_raws) ? l.selected_optional_raws : [],
     }))
     .filter((l) => l.item_id && l.qty > 0);

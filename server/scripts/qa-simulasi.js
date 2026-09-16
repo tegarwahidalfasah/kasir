@@ -262,9 +262,16 @@ try {
     `${okVoid} void sukses · ${((Date.now() - tVoid) / 1000).toFixed(2)} detik${notBack.length ? ' · belum kembali: ' + notBack.map((i) => raws[i]?.name).join(', ') : ''}`);
 
   // ------------------------------------------------- 8. balapan antar kasir
-  const scarce = Object.values(raws).sort((a, b) => a.stock_qty - b.stock_qty).find((r) => r.stock_qty > 5);
-  const scarceOf = menu.find((m) => (m.recipe || []).some((r) => r.raw_item_id === scarce?.id));
+  // pilih bahan yang benar-benar dipotong SAAT PENJUALAN: hanya produk make_to_order yang
+  // mengonsumsi bahan langsung (produk make_to_stock memotong stok barang jadi, jadi rasinya
+  // tidak akan pernah menyentuh bahan).
+  const mtoMenu = menu.filter((m) => m.production_mode === 'make_to_order' && (m.recipe || []).length);
+  const scarce = Object.values(raws).sort((a, b) => a.stock_qty - b.stock_qty)
+    .find((r) => r.stock_qty > 5 && mtoMenu.some((m) => (m.recipe || []).some((x) => x.raw_item_id === r.id)));
+  const scarceOf = mtoMenu.find((m) => (m.recipe || []).some((r) => r.raw_item_id === scarce?.id));
   if (scarce && scarceOf) {
+    // kosongkan stok barang jadi produk ini supaya tiap penjualan pasti memotong bahan
+    await call('/stock/adjust', { token: owner.token, method: 'POST', body: { items: [{ item_id: scarceOf.id, counted_qty: 0 }], reason: 'qa: rasio bahan vs stok jadi' } });
     const st = (await stockOf())[scarce.id];
     const per = ((scarceOf.recipe.find((r) => r.raw_item_id === scarce.id).qty) * (1 + (scarceOf.recipe.find((r) => r.raw_item_id === scarce.id).waste_pct || 0) / 100)) / (Math.max(1, Number(scarceOf.yield_pct) || 100) / 100);
     const attempts = Math.min(120, Math.max(4, Math.ceil(st / per) + 8));

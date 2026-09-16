@@ -131,7 +131,16 @@ Tabel `payment_methods` (bukan blok JSON): `name`, `kind` (`cash` \| `wallet` \|
 | `show` | objek boolean | sakelar per bagian yang benar-benar dipakai renderer: `logo, store_name, address, phone, npwp, invoice, date, cashier, items, discounts, tax, service, payment, change, social, footer` (baris pelanggan/tipe order muncul otomatis bila datanya ada) |
 | `line_char` · `center_char` | `-` · `=` | pemisah & pemusatan |
 | `social` | `@tokosaya` | baris media sosial (aktif bila `show.social`) |
-| `custom_lines` | `[]` | `[{position:'top'\|'bottom', text:'…'}]` — baris bebas tambahan; `{{store_name}}`, `{{invoice}}`, `{{grand_total}}` (khusus `bottom`) diganti otomatis |
+| `custom_lines` | `[]` | `[{position:'top'\|'bottom', text:'…'}]` — baris bebas; placeholder `{{…}}` diisi otomatis (lihat daftar di bawah) |
+
+Placeholder yang dikenal perender struk (`headVars`/`tailVars` di `client/src/features/receipt/receipt.jsx`,
+Daftar sama dengan `variables` yang dikirim `POST /api/receipt/preview`):
+
+| Untuk baris `top` | Tambahan untuk baris `bottom` |
+|---|---|
+| `{{store_name}} {{address}} {{phone}} {{npwp}} {{invoice}} {{date}} {{cashier}} {{customer}} {{footer}} {{thank_you}}` | `{{subtotal}} {{discount}} {{service}} {{tax}} {{rounding}} {{grand_total}} {{payment}} {{paid}} {{change}} {{items}}` |
+
+Contoh: `text: "POIN ANDA: {{customer}}"` di `top`, atau `text: "Pajak {{tax}} dari {{grand_total}}"` di `bottom`.
 
 `header` berperilaku sebagai baris pertama: bila terisi, teks itu yang dicetak (bukan nama toko);
 `subheader` menyusul di bawahnya. Pilihan lebar kertas di panel: **58 · 65 · 72 · 80 mm · A4**
@@ -146,9 +155,10 @@ Lebar kertas → jumlah kolom karakter (didefinisikan `COLS` di `client/src/feat
 
 Nama barang panjang tidak membuat struk meluber: `twoCol()` memotong label (menyisakan nilai di kanan) lalu `wrap()`
 menempelkan sisanya di baris baru; QA memeriksa baris terlebar tetap ≤ batas untuk 58/72/80/240 mm.
-**Pratinjau** di Pengaturan → Struk bekerja dua lapis: sebelum ada transaksi, susunan teks dihitung di peramban
-(`buildReceiptLines`); setelah ada transaksi terakhir, panel memanggil `POST /api/receipt/preview` (tanpa menyimpan apa pun)
-dan menampilkan HTML 32 kolom versi server — jadi yang Anda lihat adalah hasil printer, bukan perkiraan.
+**Pratinjau** di Pengaturan → Struk: panel memanggil `POST /api/receipt/preview` (tidak menyimpan apa pun) yang
+mengembalikan `receipt` hasil gabung + `store` + `theme` + `sample` (transaksi selesai terakhir beserta itemnya) +
+`variables`; komponennya (`Receipt`) yang merender baris 32 kolom di layar, jadi yang Anda lihat adalah susunan
+sebenarnya dengan data nyata, bukan perkiraan. Bila toko belum punya transaksi, `sample` kosong dan pratinjau memakai contoh di klien.
 Menyimpan (Simpan) membuat perubahan berlaku untuk semua perangkat yang login ke toko itu.
 
 ## 8. Perilaku layar kasir (`pos`) — permission `setting.store`

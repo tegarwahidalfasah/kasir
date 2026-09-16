@@ -343,6 +343,50 @@ describe('api', () => {
     assert.equal((await must('/stock/integrity')).mismatches.length, 0, 'ledger tetap bersih setelah seluruh void');
   });
 
+  it('unduh backup menghasilkan berkas SQLite sungguhan + tercatat di audit', async () => {
+    const r = await fetch(`${BASE}/api/admin/backup`, { headers: { authorization: `Bearer ${token.owner}` } });
+    assert.equal(r.status, 200, 'backup untuk owner');
+    const buf = Buffer.from(await r.arrayBuffer());
+    assert.equal(buf.subarray(0, 6).toString(), 'SQLite', 'magic header SQLite');
+    assert.ok(buf.length > 100_000, `ukuran wajar (${buf.length})`);
+    const denied = await fetch(`${BASE}/api/admin/backup`, { headers: { authorization: `Bearer ${token.cashier}` } });
+    assert.equal(denied.status, 403, 'kasir tidak boleh mengunduh backup');
+    const aud = await must('/audit?entity=database&limit=10');
+    assert.ok(aud.length > 0 && aud.every((x) => x.action === 'backup.download'), 'backup.download tercatat');
+  });
+
+  it('addon dari klien divalidasi ke item_addons (harga & bahan tidak bisa dipalsukan)', async () => {
+    const finished = (await must('/items?type=finished')).find((i) => i.item_type === 'finished' && !i.is_non_stock);
+    const raws = await must('/items?type=raw');
+    const biji = raws.find((r) => /Kopi|Biji/i.test(r.name)) || raws[0];
+    const asing = raws.find((r) => r.id !== biji.id) || raws[1];
+    await must(`/items/${finished.id}/addons`, { method: 'PUT', body: { addons: [{ name: 'Extra Shot', price_delta: 6000, raw_item_id: biji.id, raw_qty: 9 }] }, token: token.owner });
+    // siapkan stok bahan agar transaksi tidak ditolak kapasitas
+    await must('/stock/adjust', {
+      method: 'POST', token: token.owner,
+      body: { items: raws.map((r) => ({ item_id: r.id, counted_qty: Math.max(5000, Math.ceil(r.stock_qty)) })), reason: 'api test: siapkan bahan' },
+    });
+    const stockBefore = Object.fromEntries(raws.map((r) => [r.id, r.stock_qty]));
+    const forged = await must('/sales', {
+      method: 'POST', token: token.cashier,
+      body: {
+        lines: [{ item_id: finished.id, qty: 2, addons: [{ name: 'Extra Shot', price_delta: -19000, raw_item_id: asing.id, raw_qty: 999999 }] }],
+        external_ref: `forge-${Date.now()}`,
+      },
+    });
+    const line = forged.lines?.[0] || (await must(`/sales/${forged.id}`)).items[0];
+    const hargaDb = Number(finished.selling_price) || 0;
+    // price_delta PALSU (-19000) harus digantikan nilai DB (+6000); qty 2 -> (harga+6000) x 2 sebelum pajak
+    assert.equal(line.addon_delta, 6000, 'addon_delta diambil dari item_addons, bukan payload klien');
+    assert.equal(line.line_total, (hargaDb + 6000) * 2, 'line_total memakai harga master + addon DB');
+    assert.ok(forged.grand_total >= 2 * hargaDb, `total ${forged.grand_total} tidak boleh lebih murah dari 2x harga master`);
+    const after = Object.fromEntries((await must('/items')).filter((i) => stockBefore[i.id] != null).map((i) => [i.id, i.stock_qty]));
+    const dipakaiAsing = stockBefore[asing.id] - (after[asing.id] ?? stockBefore[asing.id]);
+    assert.ok(dipakaiAsing < 100, `bahan yang tidak ada di resep (${asing.name}) tidak boleh terpotong ${dipakaiAsing}`);
+    await must(`/sales/${forged.id}/void`, { method: 'POST', body: { reason: 'bersih-bersih' }, token: token.owner });
+    await must(`/items/${finished.id}/addons`, { method: 'PUT', body: { addons: [] }, token: token.owner });
+  });
+
   it('isolasi antar toko: admin toko lain tidak bisa mengubah data toko A', async () => {
     const { DatabaseSync } = await import('node:sqlite');
     const crypto = await import('node:crypto');

@@ -100,7 +100,7 @@ Bila `ops/kasir.service` tidak dipakai, jalankan minimal dengan:
 | **Bulanan 1-nya 04:00** | **latih pemulihan** ke pangkalan sementara | lihat §6 langkah 4 |
 | **Bulanan** | cek kapasitas disk & ukuran DB | `ops/maintenance.sh status` (menampilkan “ledger vs stok” + cadangan terakhir) |
 | **Triwulanan** | audit hak akses | `GET /api/users`, `GET /api/roles`; cabut yang tidak dipakai; ganti kata sandi |
-| **Sebelum rilis** | `npm run check && npm run test:qa` | 49 unit/integrasi + 28 smoke UI + 20 QA harus hijau |
+| **Sebelum rilis** | `npm run check && npm run test:qa` | 51 unit/integrasi + 28 smoke UI + 20 QA harus hijau |
 
 `ops/maintenance.sh` adalah pembungkus tipis (kunci `flock` + log + notifikasi) di atas skrip
 `server/scripts/{backup,maintenance}.js`; contoh cron ada di [`ops/crontab.example`](../ops/crontab.example).

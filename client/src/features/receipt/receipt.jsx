@@ -50,7 +50,14 @@ export function buildReceiptLines({ snapshot, tx, items = [], receipt, store }) 
   const lines = [];
   const push = (...t) => lines.push(...t.flatMap((x) => wrap(x, W)));
 
-  (cfg.custom_lines || []).filter((l) => l.position === 'top' && l.text).forEach((l) => push(substitute(l.text, { store_name: store?.name, invoice: tx?.invoice_no })));
+  // variabel untuk baris kustom {{...}} (senagai dengan daftar `variables` dari POST /api/receipt/preview)
+  const headVars = {
+    store_name: store?.name || snapshot?.store?.name || '', address: store?.address || '', phone: store?.phone || '',
+    npwp: store?.npwp || '', invoice: tx?.invoice_no || '', date: tx?.created_at ? dateTime(tx.created_at) : '',
+    cashier: snapshot?.cashier_name || tx?.cashier_name || '', customer: tx?.customer_name || '',
+    footer: cfg.footer || '', thank_you: cfg.thank_you || '',
+  };
+  (cfg.custom_lines || []).filter((l) => l.position === 'top' && l.text).forEach((l) => push(substitute(l.text, headVars)));
   if (show.logo && (store?.logo_data_url || snapshot?.store?.logo)) lines.push('[[LOGO]]');
   if (show.store_name) push(center(cfg.header || store?.name || snapshot?.store?.name || '', W, cfg.center_char));
   else if (cfg.header) push(center(cfg.header, W, cfg.center_char));
@@ -103,7 +110,15 @@ export function buildReceiptLines({ snapshot, tx, items = [], receipt, store }) 
   if (show.social && cfg.social) push(center(cfg.social, W));
   if (show.footer && cfg.footer) push(center(cfg.footer, W));
   if (cfg.thank_you) push(center(cfg.thank_you, W, cfg.center_char));
-  (cfg.custom_lines || []).filter((l) => l.position === 'bottom' && l.text).forEach((l) => push(substitute(l.text, { store_name: store?.name, invoice: tx?.invoice_no, grand_total: money(grand) })));
+  const tailVars = {
+    ...headVars,
+    subtotal: money(p.subtotal ?? tx?.subtotal ?? 0), discount: money(p.discount_total ?? tx?.discount_total ?? 0),
+    service: money(p.service_total ?? tx?.service_total ?? 0), tax: money(p.tax_total ?? tx?.tax_total ?? 0),
+    rounding: money(p.rounding_total ?? 0), grand_total: money(grand),
+    payment: tx?.payment_name || '', paid: money(p.paid_amount ?? tx?.paid_amount ?? 0),
+    change: money(p.change_amount ?? tx?.change_amount ?? 0), items: String(items.length),
+  };
+  (cfg.custom_lines || []).filter((l) => l.position === 'bottom' && l.text).forEach((l) => push(substitute(l.text, tailVars)));
   return lines;
 }
 const trim = (n) => String(Number(n) % 1 === 0 ? Number(n) : Number(n).toFixed(2));

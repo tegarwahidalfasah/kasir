@@ -44,7 +44,7 @@ Rilis internal: Fase 1–3 terimplementasi sebagai kode berjalan, Fase 4 berupa 
 - `server/scripts/qa-simulasi.js`: 20 pemeriksaan transaksi massal di server nyata (400 struk, 120 permintaan paralel
   pada bahan yang sama, akurasi BOM vs rumus reference, kebocoran stok, idempotensi, snapshot struk kebal perubahan setting,
   pembatalan massal, RBAC, 401/403/404, pemindaian kolom rahasia) — 20/20 hijau.
-- Harness tes: `server/tests/{api,pricing,stock}.test.js` + `harness.js` (49 tes) dengan DB sementara **per file**;
+- Harness tes: `server/tests/{api,pricing,stock}.test.js` + `harness.js` (51 tes) dengan DB sementara **per file**;
   smoke UI `client/tests/` (28 pemeriksaan, render + alur bayar + tema + lebar struk).
 - Alat pemeliharaan: `server/scripts/backup.js` (`VACUUM INTO` + `integrity_check` + `foreign_key_check` + rotasi `--keep`),
   `server/scripts/maintenance.js` (`status|verify|backup|restore|vacuum|prune|health`), pembungkus cron `ops/maintenance.sh`,
@@ -52,7 +52,21 @@ Rilis internal: Fase 1–3 terimplementasi sebagai kode berjalan, Fase 4 berupa 
 - Dokumen: `README.md` + `docs/01…10` (arsitektur, skema, aturan stok/BOM, keamanan/RBAC, kustomisasi, panduan pengguna/SOP,
   referensi API, hasil QA, deployment & maintenance, rencana rilis beta).
 
-### Diperbaiki (lahir dari hasil QA)
+### Diperbaiki (lahir dari hasil QA)- `GET /api/admin/backup` selalu 500 (`req is not defined` di handler yang parameternya `_req`) → diperbaiki + tes regresi
+  yang memverifikasi magic header `SQLite` pada berkas unduhan dan entri audit `backup.download`.
+- Addon transaksi divalidasi ke DB: `price_delta`, `raw_item_id`, `raw_qty` kini selalu diambil dari baris `item_addons`
+  (via `resolveAddons()` di `server/src/sales.js` yang dipanggil `normalizeLines()` untuk pratinjau, order tertahan, dan
+  penjualan). Sebelumnya nilai dari payload klien dipercaya, sehingga harga bisa direkayasa dan bahan barang lain dipotong.
+- `server/scripts/seed.js`: urutan nilai INSERT bahan baku bergeser (`stock_qty` terisi `min_stock`, `min_stock` jadi 0,
+  `lead_time_days` terisi nama pemasok) sehingga ada bahan ber-stok negatif setelah seed → diperbaiki; seed sekarang
+  menghasilkan 0 stok negatif dan 0 selisih ledger.
+- `nextInvoiceNo()` hanya mencoba 20 nomor pertama sehingga di DB berisi riwayat nomor struk jatuh ke `-<timestamp>`
+  (13 digit di struk) → sekarang meneruskan nomor terbesar hari itu (`KS20260916-1328`).
+- Pesan peringatan stok memakai angka mentah (`habis 5.779816 hari lagi`) → dibulatkan (`± 6 hari lagi`),
+  dan daftar `variables` di `POST /api/receipt/preview` disamakan dengan placeholder yang benar-benar diisi perender struk
+  (`{{store_name}} {{invoice}} {{date}} {{cashier}} {{customer}} {{subtotal}} {{tax}} {{grand_total}} {{payment}} …`).
+- `server/scripts/qa-simulasi.js`: pemeriksaan balapan kasir kini memilih bahan yang dipakai produk **make_to_order** dan
+  mengosongkan stok jadi produk itu lebih dulu (sebelumnya bisa lolos kebetulan karena produk make_to_stock tidak memotong bahan).
 
 - `rawCapacity()` tidak membagi `yield_pct` → angka “maks N porsi” di POS lebih optimis daripada yang boleh dijual.
 - Urutan tidak stabil: `GET /api/audit` dan `GET /api/sales` kini memakai tiebreaker `rowid DESC`.

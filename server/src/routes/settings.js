@@ -207,8 +207,9 @@ router.post(MOUNT + '/receipt/preview', auth(), http((req, res) => {
     store: loadSetting(req.storeId, 'store', DEFAULTS.store),
     theme: loadSetting(req.storeId, 'theme', DEFAULTS.theme),
     sample: last ? { ...last, items } : null,
-    variables: ['store_name', 'address', 'phone', 'invoice', 'date', 'cashier', 'customer', 'items', 'subtotal',
-      'discount', 'service', 'tax', 'rounding', 'grand_total', 'payment', 'paid', 'change', 'footer', 'thank_you', 'npwp'],
+    // daftar yang benar-benar diisi client (lihat headVars/tailVars di client/src/features/receipt/receipt.jsx)
+    variables: ['store_name', 'address', 'phone', 'npwp', 'invoice', 'date', 'cashier', 'customer', 'footer', 'thank_you',
+      'items', 'subtotal', 'discount', 'service', 'tax', 'rounding', 'grand_total', 'payment', 'paid', 'change'],
   });
 }));
 
@@ -235,7 +236,7 @@ router.delete(MOUNT + '/branches/:id', auth('setting.store'), http((req, res) =>
 }));
 
 /** Snapshot DB untuk backup manual (Fase 4: pemeliharaan). */
-router.get(MOUNT + '/admin/backup', auth('system.maintenance'), http((_req, res) => {
+router.get(MOUNT + '/admin/backup', auth('system.maintenance'), http((req, res) => {
   const file = DB_FILE + '.backup.sqlite';
   try {
     if (fs.existsSync(file)) fs.unlinkSync(file);

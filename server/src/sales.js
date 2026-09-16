@@ -19,7 +19,39 @@ export function catalogFor(storeId) {
      FROM items WHERE store_id = ? AND is_active = 1 ORDER BY item_type DESC, name ASC`,
     storeId
   );
-  return Object.fromEntries(rows.map((r) => [r.id, r]));
+  const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
+  // addon dilekatkan di sini supaya harga & bahan addon selalu diambil dari DB, bukan dari payload klien
+  for (const ad of allRows(
+    `SELECT a.* FROM item_addons a JOIN items i ON i.id = a.item_id
+     WHERE i.store_id = ? ORDER BY a.sort_order`, storeId)) {
+    const parent = byId[ad.item_id];
+    if (parent) (parent.addons ||= []).push(ad);
+  }
+  return byId;
+}
+
+/**
+ * Resolusi addon terhadap katalog server: payload klien hanya boleh menyebut `id` (atau `name`)
+ * addon yang memang terdaftar pada barang itu. `price_delta`, `raw_item_id`, dan `raw_qty`
+ * selalu diambil dari baris `item_addons` — jadi tidak ada cara menambah/mengubah harga lewat
+ * body transaksi, dan bahan yang dipotong pasti milik toko yang sama.
+ */
+export function resolveAddons(catalog, itemId, addons) {
+  const known = catalog?.[itemId]?.addons || [];
+  if (!Array.isArray(addons) || !known.length) return [];
+  const out = [];
+  for (const raw of addons) {
+    const row = known.find((k) => String(k.id) === String(raw?.id))
+      || known.find((k) => k.name && raw?.name && k.name === raw.name);
+    if (!row) continue;
+    if (out.some((x) => x.id === row.id)) continue;               // satu addon cukup sekali
+    out.push({
+      id: row.id, name: row.name, price_delta: Number(row.price_delta) || 0,
+      raw_item_id: row.raw_item_id || null, raw_qty: Number(row.raw_qty) || 0,
+      qty: Math.max(1, Math.floor(Number(raw?.qty ?? 1) || 1)),
+    });
+  }
+  return out;
 }
 
 export function activeRules(storeId) {
@@ -42,11 +74,18 @@ export const setQuietAlerts = (v) => { QUIET_ALERTS = !!v; };
 
 export function nextInvoiceNo(storeId, prefix = 'INV') {
   const day = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  for (let i = 0; i < 20; i += 1) {
-    const used = firstRow(`SELECT id FROM transactions WHERE store_id = ? AND invoice_no = ?`, storeId, `${prefix}${day}-${String(1000 + i)}`);
-    if (!used) return `${prefix}${day}-${String(1000 + i)}`;
+  const base = `${prefix}${day}-`;
+  // mulai dari nomor terbesar hari ini (bukan 20 percobaan dari 1000) supaya nomor tetap rapi
+  // walau data historis/seed sudah memakai ribuan nomor pertama.
+  const maxRow = firstRow(
+    `SELECT MAX(CAST(substr(invoice_no, ?) AS INTEGER)) AS m FROM transactions
+     WHERE store_id = ? AND invoice_no LIKE ?`, base.length + 1, storeId, `${base}%`);
+  let next = Math.max(1000, (Number(maxRow?.m) || 0) + 1);
+  for (let i = 0; i < 2000; i += 1, next += 1) {
+    const used = firstRow(`SELECT id FROM transactions WHERE store_id = ? AND invoice_no = ?`, storeId, `${base}${next}`);
+    if (!used) return `${base}${next}`;
   }
-  return `${prefix}${day}-${Date.now()}`;
+  return `${base}${Date.now()}`;
 }
 
 /**

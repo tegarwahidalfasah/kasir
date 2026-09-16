@@ -101,10 +101,18 @@ router.post(MOUNT + '/roles/reset', auth('role.manage'), http((req, res) => {
 }));
 
 // ------------------------------------------------------------------- audit log
-router.get(MOUNT + '/audit', auth(['role.manage', 'system.maintenance']), http((req, res) => res.json(
-  allRows(
+/** Log audit per toko. Saring dengan ?user_id=, ?entity=, ?entity_id=, ?action=, ?limit= (maks 300). */
+router.get(MOUNT + '/audit', auth(['role.manage', 'system.maintenance']), http((req, res) => {
+  const where = ['a.store_id = ?'];
+  const params = [req.storeId];
+  const q = req.query || {};
+  for (const key of ['user_id', 'entity', 'entity_id', 'action']) {
+    if (q[key]) { where.push(`a.${key} = ?`); params.push(q[key]); }
+  }
+  params.push(Math.min(300, Number(q.limit) || 100));
+  res.json(allRows(
     `SELECT a.*, u.display_name AS actor FROM audit_logs a LEFT JOIN users u ON u.id = a.user_id
-     WHERE a.store_id = ? ORDER BY a.created_at DESC, a.rowid DESC LIMIT ?`,
-    req.storeId, Math.min(300, Number(req.query.limit) || 100)
-  )
-)));
+     WHERE ${where.join(' AND ')} ORDER BY a.created_at DESC, a.rowid DESC LIMIT ?`,
+    ...params
+  ));
+}));

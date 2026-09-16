@@ -134,9 +134,12 @@ export function generateAlerts(storeId, opts = {}) {
       storeId, h.id
     );
     if (dup) continue;
+    const qtyTxt = Number(h.stock_qty || 0).toLocaleString('id-ID', { maximumFractionDigits: 2 });
+    const sisa = h.days_to_stockout;
+    const hariTxt = sisa == null ? '' : sisa < 1 ? 'kurang dari 1 hari lagi' : `± ${Math.round(sisa)} hari lagi`;
     const msg = h.status === 'out'
       ? `${h.name} HABIS (0 ${h.unit})`
-      : `Stok ${h.name} tinggal ${h.stock_qty} ${h.unit}${h.avg_daily ? ` · perkiraan habis ${h.days_to_stockout} hari lagi` : ''}`;
+      : `Stok ${h.name} tinggal ${qtyTxt} ${h.unit}${hariTxt ? ` · perkiraan habis ${hariTxt}` : ''}`;
     exec(
       `INSERT INTO alerts (id, store_id, kind, severity, item_id, message, data_json, created_at)
        VALUES (?,?, 'low_stock', ?,?,?,?, datetime('now'))`,

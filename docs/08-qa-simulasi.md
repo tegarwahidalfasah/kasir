@@ -4,7 +4,7 @@ Tiga lapisan pengujian, semuanya jalan tanpa dependency tambahan dan **tanpa men
 (masing-masing membuat `KASIR_DATA_DIR` sementara sendiri).
 
 ```bash
-npm test          # unit + integrasi: 49 tes (pricing 16 · stok/BOM 14 · API 19) · ±3 s
+npm test          # unit + integrasi: 51 tes (pricing 16 · stok/BOM 14 · API 21) · ±5 s
 npm run test:ui   # smoke UI (jsdom + React nyata) 28 pemeriksaan · ±26 s
 npm run test:qa   # QA transaksi massal: 20 pemeriksaan · ±10 s (400 struk)
 npm run check     # npm test + test:ui + build client
@@ -33,7 +33,7 @@ TEST_KEEP=1 npm test                              # simpan DB sementara untuk di
 | 1.6 | ✅ permintaan di atas kapasitas bahan ditolak — HTTP 409 · “Bahan baku untuk Americano tidak cukup — maksimal 229 porsi tersisa” |
 | 1.7 | ✅ penolakan tidak mengubah stok sama sekali — 5 bahan dicek ulang |
 | 1.8 | ✅ 12 struk terbaru seluruhnya punya jejak di log audit — 300 entri `sale.create` · 12/12 struk terlacak |
-| 1.9 | ✅ `external_ref` ganda dilayani idempoten (tidak memotong stok lagi) |
+| 1.9 | ✅ `external_ref` ganda dilayani idempoten (`duplicated: true`, tidak memotong stok lagi) |
 | 1.10 | ✅ struk tersimpan memakai snapshot (harga & layout tidak berubah setelah setting diedit) — `grand_total` 20000 tetap |
 | 1.11 | ✅ pembatalan 400 transaksi **mengembalikan seluruh stok bahan** — 400 void sukses · 1.20 detik |
 | 1.12 | ✅ balapan 120 kasir pada bahan “Cup Plastik 16oz + Lid” — 120 sukses, 0 ditolak · stok 1600.00 → 1480.00 (dipakai 120.00) |
@@ -58,7 +58,7 @@ RBAC, ledger, dan snapshot ikut teruji.
   `POST /api/stock/reconcile` harus `fixed: 0`.
 * **1.5** — `GET /api/stock/integrity`: `mismatches = []` (stok = Σ seluruh baris ledger).
 * **1.6–1.7** — permintaan `qty = stok bahan + 1000` → 409; stok dibaca ulang, tidak boleh bergerak.
-* **1.9** — `POST /api/sales` dengan `external_ref` yang sama 3× beruntun → 200 (`idempotent_replay`) dan 1 invoice yang sama.
+* **1.9** — `POST /api/sales` dengan `external_ref` yang sama 3× beruntun → 200 (`duplicated: true`) dan 1 invoice yang sama.
 * **1.10** — setelah transaksi, `PUT /api/settings/tax` (`enabled:false, default_rate_pct:0`) & `PUT /api/settings/receipt`
   (header/lebar diubah) → `GET /sales/:id` harus tetap menampilkan angka & layout lama; lalu setting dikembalikan.
 * **1.11** — 400× `POST /sales/:id/void` → Δstok persisi kembali ke nilai awal.
@@ -95,10 +95,24 @@ RBAC, ledger, dan snapshot ikut teruji.
 | Isolasi tenant: `PUT`/`DELETE /api/users/:id`, `PUT /api/payment-methods/:id`, `PUT /api/discounts/:id`, `PUT/DELETE /api/categories/:id`, `PUT /api/items/:id/addons` hanya memakai `WHERE id = ?` | semua ditambah `AND store_id = ?` (+ cek keberadaan untuk kategori) → admin toko lain **tidak bisa** mengubah/mereset user/harga di toko lain. Regresi: `it('isolasi antar toko…')` di `server/tests/api.test.js` |
 | Guard auth bergantung pada urutan router; `?token=` di query string | guard global `api.use(authenticate)` (default-deny) + token hanya lewat header; tes “endpoint tanpa token → 401” tetap hijau |
 | `bootstrap` menampilkan `stores.name` tetapi nama toko dari blok `settings.store` lebih dulu, sehingga toko baru tampil “Toko Saya” | `store: { ...DEFAULTS.store, ...store, name: store.name || settings.store.name }` |
-| `stockHealth()` memakai `OUT_TYPES` berbeda dari `v_stock_health` (opname turun tidak dihitung di satu sisi) | disamakan: `('sale_out','bom_consume','adjustment')` — 49 tes tetap hijau |
+| `stockHealth()` memakai `OUT_TYPES` berbeda dari `v_stock_health` (opname turun tidak dihitung di satu sisi) | disamakan: `('sale_out','bom_consume','adjustment')` — 51 tes tetap hijau |
 | Toggle struk `barcode` & `points` ada di default tetapi tidak dirender | dikeluarkan dari `DEFAULTS.receipt.show` dan daftar label UI (dok 05 §7 mencatatnya “belum didukung”) |
 | 5xx di produksi mengirim pesan mentah (mis. detail SQL) ke klien | `errorHandler` menyembunyikan pesan 5xx saat `NODE_ENV=production` (tetap di log) |
 | `db.backup()` tidak tersedia di `node:sqlite` Node 22.22 | cadangan memakai `VACUUM INTO` (`GET /api/admin/backup` + `server/scripts/backup.js`) |
+
+### Putaran verifikasi kedua (smoke API 60 pemeriksaan manual)
+
+Selain tiga lapisan di atas, `docs/08` versi ini dihasilkan setelah menjalankan smoke API tambahan
+(60 pemeriksaan, DB seed baru) yang memeriksa setiap rute + permission + format respons. Lima temuan nyata:
+
+| Temuan | Perbaikan |
+|---|---|
+| `GET /api/admin/backup` selalu **500** (`req is not defined` — handler memakai `_req`) | parameter diperbaiki; tes regresi “unduh backup menghasilkan berkas SQLite + tercatat di audit” (memeriksa magic header `SQLite` & panjang > 100 KB) |
+| payload transaksi boleh membawa `price_delta` / `raw_item_id` / `raw_qty` addon sendiri → harga bisa dipalsukan & bahan toko lain bisa dipotong | `resolveAddons()` (di `server/src/sales.js`) memetakan addon ke baris `item_addons` DB lewat `normalizeLines()` untuk `/pos/preview`, `/pos/hold`, dan `POST /sales`; tes regresi “addon dari klien divalidasi ke `item_addons`” |
+| seed menulis kolom bahan bergeser (`stock_qty` diisi `min`, `min_stock` jadi 0, `lead_time_days` diisi teks pemasok) → 1 bahan stoknya **negatif** & `reconcileStock` harus “menyelamatkan” 9 item | urutan nilai `INSERT` bahan diperbaiki; seed kini menghasilkan **0 stok negatif, 0 selisih ledger** |
+| `nextInvoiceNo()` hanya mencoba 20 nomor pertama → di DB yang sudah berisi riwayat, nomor struk baru jatuh ke `-<timestamp>` (13 digit, jelek di struk) | diambil dari `MAX(CAST(substr(...)))` nomor hari itu (fallback tetap ada); tes format `KS20260916-1328` |
+| pesan alert memakai angka mentah (`perkiraan habis 5.779816 hari lagi`) | dibulatkan (`± 6 hari lagi`, `< 1` → “kurang dari 1 hari”), dan daftar `variables` di `POST /receipt/preview` disamakan dengan placeholder yang benar-benar diisi perender (`headVars`/`tailVars` di `client/src/features/receipt/receipt.jsx`) |
+| pemeriksaan “balapan kasir” di QA bisa lolos karena kebetulan: ia memilih bahan termurah lalu menjual produk apa pun yang memakainya — produk `make_to_stock` tidak memotong bahan sama sekali | QA kini memilih di antara produk **make_to_order** saja dan mengosongkan stok jadi produk itu lewat opname, sehingga setiap penjualan pasti memotong bahan |
 
 ## 3. Smoke UI (render, alur, tema, struk)
 

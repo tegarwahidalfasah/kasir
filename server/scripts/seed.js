@@ -114,8 +114,9 @@ for (const r of RAW) {
   rawId[r.key] = id;
   exec(`INSERT INTO items (id, store_id, name, item_type, unit, cost_price, selling_price, stock_qty, min_stock,
             lead_time_days, supplier_name, tax_mode, is_non_stock, is_active)
-        VALUES (?,?,?,'raw',?,?,?,?,0,?,?, 'inherit',0,1)`,
-    id, storeId, r.name, r.unit, r.cost, 0, r.min, r.lead, r.supplier); // stock_qty selalu 0 di sini -> diisi lewat ledger
+        VALUES (?,?,?,'raw',?,?, 0, 0, ?,?,?, 'inherit',0,1)`,
+    // stock_qty & selling_price = 0 literal (stok awal diisi lewat ledger); kolom ke-9..11 = min_stock, lead, supplier
+    id, storeId, r.name, r.unit, r.cost, r.min, r.lead, r.supplier);
 }
 
 // ------------------------------------------------------------------ 6. barang jadi

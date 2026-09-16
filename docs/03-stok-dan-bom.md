@@ -43,11 +43,15 @@ madeNow = 2
 tepung  = 2 × 150 × 1,02 ÷ 0,98 = 312,245 gr
 ```
 
-**Addon.** `item_addons` melekat pada satu barang (`name`, `price_delta`, `raw_item_id`, `raw_qty`, `is_required`).
-Saat checkout, `price_delta` dijumlahkan ke harga satuan baris (bukan baris terpisah), dan bahannya **selalu** dipotong:
-
+**Addon.** `item_addons` adalah daftar pilihan berbayar per barang (`name`, `price_delta`, `raw_item_id`, `raw_qty`).
+Payload transaksi **tidak boleh** membawa harga/bahan sendiri: server memetakan setiap `lines[].addons[]` ke baris
+`item_addons` milik barang itu (via `resolveAddons()` di `server/src/sales.js`, dipanggil `normalizeLines()` di
+`routes/pos.js` untuk pratinjau, order tertahan, dan penjualan) — cocokkan `id` (fallback `name`), qty dibulatkan ≥ 1,
+duplikat dibuang, addon tak dikenal diabaikan. Jadi `price_delta`, `raw_item_id`, `raw_qty` selalu dari DB
+(= mustahil menaikkan/menurunkan harga lewat body, dan bahan yang dipotong pasti milik toko yang sama).
+Saat retur, `transaction_items.addons_json` (hasil resolusi) yang dipakai supaya proporsinya sama.
 ```
-konsumsi(bahan addon) = raw_qty × (addon.qty ?? 1) × Q          // "Es Kopi + Extra Shot": biji kopi +18 g
+konsumsi(bahan addon) = raw_qty × addon.qty × Q          // seed: "Extra shot espresso" +Rp6.000 & +9 g biji kopi/porsi
 ```
 
 Saat retur sebagian, `addons_json` baris dipakai ulang agar potongan bahan ikut kembali secara proporsional.
@@ -68,7 +72,7 @@ Karena pembaginya **sama** dengan rumus potongan (§2), angka di layar tidak per
 ## 4. Alur `POST /api/sales` (satu transaksi DB, `BEGIN IMMEDIATE`)
 
 1. **Idempotensi** (`transactions.external_ref` UNIQUE, periksa sebelum INSERT):
-   `external_ref` yang sudah pernah dipakai → struk lama dikembalikan (`idempotent_replay: true`, HTTP **200**), tanpa potongan baru.
+   `external_ref` yang sudah pernah dipakai → struk lama dikembalikan utuh (`GET`-shape + `duplicated: true`, HTTP **200**), tanpa potongan baru.
 2. **Nomor struk** `nextInvoiceNo()`: `{settings.store.invoice_prefix}{YYYYMMDD}-{1000…}`; fallback `-<timestamp>` bila 20 nomor pertama terpakai (kasus DB hasil seed).
 3. **Harga** dihitung server dengan `priceCart(...)` (pajak, diskon, service, pembulatan, biaya metode bayar). Angka yang ditampilkan POS hanya proyeksi layar; nilai tersimpan selalu hasil perhitungan server sehingga dua kasir dengan harga manual berbeda tetap konsisten.
 4. **Validasi stok** — agregat per item lintas baris (`Map`), stok jadi & bahan. Kekurangan → **409**
@@ -82,6 +86,8 @@ Karena pembaginya **sama** dengan rumus potongan (§2), angka di layar tidak per
 8. Setelah commit, **bangkitkan peringatan stok** (`generateAlerts(storeId, {days: tax.consumption_window_days, lookaheadDays: tax.alert_lookahead_days})`) — dibungkus `try/catch` supaya alert tidak pernah menggagalkan penjualan.
 
 Respons: `{ id, invoice_no, …pricing, payment, movements[], receipt_snapshot }`.
+Body `POST /api/sales` juga menerima `skip_alerts: true` — untuk impor/transaksi massal, pindai peringatan dijalankan
+sekali di akhir alih-alih per struk (`routes/pos.js` → `sales.js`).
 
 ## 5. Aksi lain yang menyentuh stok
 

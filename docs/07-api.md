@@ -23,7 +23,7 @@ Batas body JSON 12 MB. Nomor versi & jumlah baris tersedia di `GET /api/health`.
 |---|---|---|---|
 | GET | `/pos/catalog` | `item.view` \| `sale.create` \| `stock.view` | barang aktif + `addons[]`, `recipe[]`, `capacity`, `bom_preview`, kategori, harga, stok |
 | POST | `/pos/preview` | `sale.create` | body `{lines:[{item_id, qty, unit_price?, addons?, discount?}], customer?, order_type?}` → harga + dampak bahan |
-| POST | `/sales` | `sale.create` | buat transaksi (lihat body di §contoh). `external_ref` → idempoten |
+| POST | `/sales` | `sale.create` | buat transaksi (body di §contoh); `external_ref` ganda → struk lama + `duplicated: true` (HTTP 200); `skip_alerts: true` menunda pindai peringatan |
 | GET | `/sales` | — | `?page=&limit=&from=&to=&status=&cashier_id=` · limit ≤ 200 · tanpa `receipt_snapshot` |
 | GET | `/sales/:id` | — | detail + `items[], movements[], payments[], snapshot` |
 | POST | `/sales/:id/void` | `sale.void` | `{reason}` → semua stok kembali |
@@ -95,7 +95,7 @@ Respons: `{ok, recipe[], cost_price}` (HPP roll-up otomatis).
 | `GET/POST/PUT/DELETE /taxes` | — · `setting.tax` | tarif dapat punya `is_default` per toko |
 | `GET/POST/PUT/DELETE /discounts` | — · `setting.tax` | lihat doc 05 §5 untuk kolom aturan |
 | `GET/POST/PUT/DELETE /payment-methods` | — · `setting.payment` | `service_fee_pct`, `is_enabled`, `is_default` |
-| `POST /receipt/preview` | — | `{receipt_overrides}` → HTML struk 32 kolom |
+| `POST /receipt/preview` | — | `{receipt_overrides}` → `{receipt, store, theme, sample, variables}`; `sample` = transaksi selesai terakhir + itemnya, `variables` = daftar placeholder `{{…}}` yang tersedia (dirender klien lewat komponen `Receipt`) |
 | `GET/POST/PUT/DELETE /branches` | — · `setting.store` | cabang; header `X-Branch-Id` untuk transaksi/PO |
 | `GET /admin/backup` | `system.maintenance` | unduhan `kasir-backup-YYYY-MM-DD.sqlite` (`VACUUM INTO`) + audit `backup.download` |
 
@@ -109,7 +109,7 @@ Respons: `{ok, recipe[], cost_price}` (HPP roll-up otomatis).
 | `GET /roles` | — | daftar permission + matriks |
 | `PUT /roles/:role` | `role.manage` | `{permissions:[…]}` → `settings.rbac`, berlaku seketika |
 | `POST /roles/reset` | `role.manage` | kembali ke preset |
-| `GET /audit` | `role.manage` \| `system.maintenance` | `?user_id=&entity=&limit=` (limit ≤ 300) |
+| GET | `/audit` | `role.manage` \| `system.maintenance` | `?user_id=&entity=&entity_id=&action=&limit=` (≤ 300; urutan `created_at, rowid` DESC) |
 
 ## 6. Contoh
 
@@ -119,12 +119,14 @@ B=$(curl -s localhost:4000/api/auth/login -H 'content-type: application/json' \
 
 # buat transaksi 2 croissant (MTO → potong bahan) + QRIS, dengan kunci idempotensi
 curl -s localhost:4000/api/sales -H "authorization: Bearer $B" -H 'content-type: application/json' -d '{
-  "lines": [ { "item_id": "itm…", "qty": 2, "addons": [ { "name": "Extra Shot", "price_delta": 5000, "raw_item_id": "itm…", "raw_qty": 18 } ] } ],
+  "lines": [ { "item_id": "itm…", "qty": 2, "addons": [ { "id": "adn…", "qty": 1 } ] } ],   // addon cukup id — harga & bahan dibaca dari item_addons
   "order_type": "takeaway", "customer": { "name": "Rina" },
   "payment": { "method_id": "pay…", "paid_amount": 50000, "reference": "88291" },
   "external_ref": "kasir-1-20260916-0001"
 }' | python3 -m json.tool
-# → { id, invoice_no, grand_total, tax_total, movements:[{item_id,name,type,qty,balance_after}], receipt_snapshot }
+# → { id, invoice_no, subtotal, discount_total, tax_total, grand_total, cost_total,
+#     movements: [{ item_id, name, type, qty, balance_after }], receipt_snapshot }
+# Catatan: field addons dari klien yang tidak cocok dengan item_addons barang itu (id/nama) diabaikan.
 
 curl -s "localhost:4000/api/stock/health?days=14&lookahead=7" -H "authorization: Bearer $B" | head -c 400
 curl -s "localhost:4000/api/reports/raw-usage?from=2026-09-01&to=2026-09-16" -H "authorization: Bearer $B" | head -c 400
