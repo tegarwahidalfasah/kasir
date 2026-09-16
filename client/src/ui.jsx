@@ -5,9 +5,9 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { get as apiGet } from './api.js';
 
-export function Button({ children, variant = 'default', size, icon, loading, className = '', ...rest }) {
+export function Button({ children, variant = 'default', size, icon, loading, type = 'button', className = '', ...rest }) {
   return (
-    <button type="button" className={`btn ${variant} ${size ? `btn-${size}` : ''} ${className}`} disabled={loading || rest.disabled} {...rest}>
+    <button type={type} className={`btn ${variant} ${size ? `btn-${size}` : ''} ${className}`} disabled={loading || rest.disabled} {...rest}>
       {loading ? <span className="spinner" /> : icon ? <span className="btn-icon">{icon}</span> : null}
       {children}
     </button>
