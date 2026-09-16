@@ -206,7 +206,7 @@ function AuthPage({ onLogin, brand }) {
         )}
 
         {err && <p style={{ color: 'var(--danger)', fontSize: 13, marginBottom: 0 }}>⚠️ {err}</p>}
-        <Button className="btn-block" variant="primary" size="lg" loading={busy} style={{ marginTop: 14 }} disabled={!username || (mode === 'pin' ? pin.length < 4 : !password)}>
+        <Button type="submit" className="btn-block" variant="primary" size="lg" loading={busy} style={{ marginTop: 14 }} disabled={!username || (mode === 'pin' ? pin.length < 4 : !password)}>
           {busy ? 'Memeriksa…' : 'Masuk'}
         </Button>
         <p className="muted" style={{ fontSize: 11.5, textAlign: 'center', marginBottom: 0 }}>
