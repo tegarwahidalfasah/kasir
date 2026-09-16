@@ -12,7 +12,7 @@
     "dev": "concurrently -n server,client -c cyan,magenta \"npm:dev:server\" \"npm:dev:client\"",
     "dev:server": "node --watch --disable-warning=ExperimentalWarning server/src/index.js",
     "dev:client": "npm run dev -w @kasir/client",
-    "build": "npm run build -w @kasir/client",
+    "build": "npm run build -w @kasir/client && node -e \"import fs from 'node:fs'; try { fs.cpSync('client/dist', 'dist', {recursive:true, force:true}); fs.cpSync('client/dist', 'public', {recursive:true, force:true}); } catch(e){}\"",
     "start": "node --disable-warning=ExperimentalWarning server/src/index.js",
     "seed": "node --disable-warning=ExperimentalWarning server/scripts/seed.js",
     "reset": "node --disable-warning=ExperimentalWarning server/scripts/reset.js",

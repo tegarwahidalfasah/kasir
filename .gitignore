@@ -1,5 +1,6 @@
 node_modules/
 dist/
+public/
 build/
 server/data/
 server/src/data/

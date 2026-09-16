@@ -11,7 +11,13 @@ import { DB_FILE, firstRow } from './db/index.js';
 import { AppError } from './lib/http.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const CLIENT_DIST = path.join(__dirname, '..', '..', 'client', 'dist');
+const candidateDistPaths = [
+  path.join(__dirname, '..', '..', 'client', 'dist'),
+  path.join(process.cwd(), 'client', 'dist'),
+  path.join(process.cwd(), 'dist'),
+  path.join(process.cwd(), 'public'),
+];
+const CLIENT_DIST = candidateDistPaths.find((p) => fs.existsSync(p)) || candidateDistPaths[0];
 const PORT = Number(process.env.PORT || 4000);
 const started = Date.now();
 
