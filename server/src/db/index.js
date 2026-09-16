@@ -11,17 +11,36 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export const DATA_DIR = process.env.KASIR_DATA_DIR || path.join(__dirname, '..', 'data');
+export const DATA_DIR = process.env.KASIR_DATA_DIR || (process.env.VERCEL ? '/tmp' : path.join(__dirname, '..', 'data'));
 const DB_PATH = process.env.KASIR_DB_PATH || path.join(DATA_DIR, 'kasir.db');
-const SCHEMA = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
 
-fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+let schema = '';
+const candidateSchemaPaths = [
+  path.join(__dirname, 'schema.sql'),
+  path.join(process.cwd(), 'server', 'src', 'db', 'schema.sql'),
+  path.join(process.cwd(), 'src', 'db', 'schema.sql'),
+];
+
+for (const p of candidateSchemaPaths) {
+  try {
+    if (fs.existsSync(p)) {
+      schema = fs.readFileSync(p, 'utf8');
+      break;
+    }
+  } catch { /* continue */ }
+}
+
+try {
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+} catch { /* noop */ }
 
 export const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA journal_mode = WAL;');
 db.exec('PRAGMA foreign_keys = ON;');
 db.exec('PRAGMA busy_timeout = 5000;');
-db.exec(SCHEMA);
+if (schema) {
+  db.exec(schema);
+}
 
 export const DB_FILE = DB_PATH;
 

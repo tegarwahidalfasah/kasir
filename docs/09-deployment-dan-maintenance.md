@@ -168,3 +168,17 @@ Tidak ada telemetri keluar — tidak ada panggilan ke layanan pihak ketiga di ko
 * [ ] Printer teruji cetak 1 struk 3 baris + 1 struk 20 baris (cek tidak meluber di lebar yang dipakai).
 * [ ] Prosedur rollback dibaca & disetujui 1 orang selain installer.
 * [ ] Jam rilis disepakati; ada kanal pelaporan bug (WhatsApp/grup) + penanggung jawab.
+
+## 10. Deployment ke Platform Vercel
+
+Repositori ini juga mendukung deployment serverless ke **Vercel**:
+
+- **Arsitektur Vercel**:
+  - Frontend SPA (Vite + React) dibuild otomatis via `npm run build` dan disajikan lewat edge CDN Vercel (`client/dist`).
+  - Backend API Express disajikan sebagai Vercel Serverless Function melalui `api/index.js` dengan rewrites di `vercel.json`.
+  - Database SQLite menggunakan direktori `/tmp` (`KASIR_DATA_DIR=/tmp`) dan otomatis melakukan auto-seed data demo saat inisialisasi awal.
+- **Langkah Deploy**:
+  1. Hubungkan repositori Git ke Vercel via Dashboard Vercel atau jalankan `npx vercel`.
+  2. Vercel mendeteksi file `vercel.json` secara otomatis.
+  3. Konfigurasi selesai dan URL pratinjau/produksi langsung aktif.
+

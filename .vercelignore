@@ -1,0 +1,18 @@
+# Vercel Ignore List
+.git
+.github
+docs/
+ops/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+server/data/
+server/src/data/
+client/tests/.cache/
+client/tests/
+server/tests/
+coverage/
+.DS_Store
