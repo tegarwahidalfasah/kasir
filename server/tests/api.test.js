@@ -16,6 +16,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kasir-api-test-'));
 
 let child = null;
+let child2 = null;   // server kedua (KASIR_TRUST_PROXY=false) untuk tes pembatas login
 const token = {};
 
 async function req(p, { method = 'GET', body, as = 'owner', raw = false } = {}) {
@@ -441,8 +442,121 @@ describe('api', () => {
   });
 });
 
+// ===========================================================================
+//  Regresi putaran analisis kedua (docs/11-analisis-2026-09-17.md):
+//  order tertahan (#5), header keamanan (#9), pembatas login (#6).
+// ===========================================================================
+describe('penguatan (docs/11)', () => {
+
+  it('order tertahan: tahan → daftar → lanjutkan → hapus (dulu 500 storeId is not defined)', async () => {
+    const cat = await must('/pos/catalog', { as: 'cashier' });
+    const item = cat.finished.find((i) => !i.is_non_stock && (i.stock_qty || 0) > 0) || cat.finished[0];
+    assert.ok(item, 'ada barang untuk ditahan');
+
+    const kosong = await req('/pos/hold', { method: 'POST', as: 'cashier', body: { lines: [] } });
+    assert.equal(kosong.status, 400, 'keranjang kosong ditolak 400');
+
+    const hold = await req('/pos/hold', {
+      method: 'POST', as: 'cashier',
+      body: { lines: [{ item_id: item.id, qty: 2 }], customer_name: 'Meja 7', selected_discount_ids: [] },
+    });
+    assert.equal(hold.status, 201, `POST /pos/hold -> ${hold.status} ${JSON.stringify(hold.data).slice(0, 200)}`);
+    assert.match(hold.data.invoice_no, /^HOLD\d{6}/, 'nomor order tertahan terbaca kasir');
+    assert.equal(hold.data.lines.length, 1, 'baris ternormalisasi dikembalikan');
+
+    // dua order pada detik yang sama tidak boleh menabrak uq_tx_invoice
+    const hold2 = await req('/pos/hold', { method: 'POST', as: 'cashier', body: { lines: [{ item_id: item.id, qty: 1 }] } });
+    assert.equal(hold2.status, 201, `hold kedua -> ${hold2.status} ${JSON.stringify(hold2.data).slice(0, 200)}`);
+    assert.notEqual(hold2.data.invoice_no, hold.data.invoice_no, 'nomor hold unik walau dibuat beruntun');
+
+    const held = await must('/pos/held', { as: 'cashier' });
+    assert.ok(held.some((h) => h.id === hold.data.id), 'order muncul di daftar tertahan');
+    assert.equal(held.find((h) => h.id === hold.data.id).customer_name, 'Meja 7', 'nama pelanggan ikut terbawa');
+
+    const detail = await must(`/pos/hold/${hold.data.id}`, { as: 'cashier' });
+    assert.equal(detail.lines[0].item_id, item.id, 'isi keranjang bisa dibaca ulang');
+    assert.equal(detail.lines[0].qty, 2, 'qty utuh untuk dilanjutkan');
+    assert.equal(detail.customer_name, 'Meja 7');
+
+    const del = await req(`/pos/hold/${hold.data.id}`, { method: 'DELETE', as: 'cashier' });
+    assert.equal(del.status, 200, 'hapus order tertahan');
+    const heldAfter = await must('/pos/held', { as: 'cashier' });
+    assert.equal(heldAfter.some((h) => h.id === hold.data.id), false, 'order yang dihapus tidak muncul lagi');
+
+    const notFound = await req(`/pos/hold/${hold.data.id}`, { as: 'cashier' });
+    assert.equal(notFound.status, 404, 'order yang sudah dihapus -> 404');
+    await req(`/pos/hold/${hold2.data.id}`, { method: 'DELETE', as: 'cashier' });   // bersihkan
+  });
+
+  it('order tertahan butuh hak sale.hold (RBAC tetap jalan)', async () => {
+    const inv = await req('/pos/hold', { method: 'POST', as: 'inventory', body: { lines: [{ item_id: 'x', qty: 1 }] } });
+    assert.equal(inv.status, 403, `manajer inventaris -> ${inv.status}`);
+  });
+
+  it('header keamanan: aplikasi tidak boleh dibingkai situs lain', async () => {
+    const r = await req('/health', { as: null, raw: true });
+    const csp = r.headers.get('content-security-policy') || '';
+    assert.ok(csp.includes("frame-ancestors 'self'"), `frame-ancestors harus 'self', dapat: ${csp.slice(0, 160)}`);
+    assert.equal(csp.includes('frame-ancestors *'), false, 'frame-ancestors * membuka clickjacking');
+    assert.ok(csp.includes("object-src 'none'"), 'object-src dinonaktifkan');
+    assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+  });
+
+  it('X-Forwarded-For palsu tidak melewati pembatas login (ember per-username)', async () => {
+    const username = 'brute-probe-user';
+    const codes = [];
+    const messages = [];
+    for (let i = 0; i < 12; i += 1) {
+      const res = await fetch(BASE + '/api/auth/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': `203.0.113.${i + 1}` },  // IP berbeda tiap percobaan
+        body: JSON.stringify({ username, password: 'salah-' + i }),
+      });
+      codes.push(res.status);
+      if (res.status === 429) messages.push((await res.json()).error || '');
+    }
+    assert.ok(codes.includes(429), `harus kena 429 walau IP dipalsukan, dapat: ${codes.join(',')}`);
+    assert.equal(codes[codes.length - 1], 429, 'percobaan terakhir diblokir');
+    assert.ok(codes.filter((c) => c === 401).length <= 10, `401 tidak boleh tak terbatas: ${codes.join(',')}`);
+    assert.ok(messages.some((m) => m.includes('akun ini')), `429 harus dari ember per-username, pesan: ${messages[0] || '-'}`);
+  });
+
+  it('login pemilik tetap berhasil setelah percobaan brute force akun lain', async () => {
+    const r = await req('/auth/login', { method: 'POST', body: { username: 'budi', password: 'rahasia123' } });
+    assert.equal(r.status, 200, `budi -> ${r.status} (tidak boleh kena lockout kolateral)`);
+    assert.ok(r.data.token, 'token diterbitkan');
+  });
+
+  it('KASIR_TRUST_PROXY=false membuat X-Forwarded-For diabaikan (pembatas per-IP jalan)', async () => {
+    const PORT2 = PORT + 200;
+    const srv2 = await spawnAndWait([path.join(ROOT, 'src', 'index.js')], 'Kasir API', {
+      env: { ...process.env, KASIR_DATA_DIR: dataDir, PORT: String(PORT2), KASIR_TRUST_PROXY: 'false' }, ticks: 150,
+    });
+    child2 = srv2.proc;
+    try {
+      const codes = [];
+      const messages = [];
+      for (let i = 0; i < 8; i += 1) {
+        const res = await fetch(`http://127.0.0.1:${PORT2}/api/auth/login`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-forwarded-for': `198.51.100.${i + 1}` },
+          body: JSON.stringify({ username: 'brute-probe-ip-' + i, password: 'salah' }),   // username berbeda: hanya ember IP yang bisa memicu
+        });
+        codes.push(res.status);
+        if (res.status === 429) messages.push((await res.json()).error || '');
+      }
+      assert.ok(codes.includes(429), `XFF harus diabaikan -> 429 per-IP, dapat: ${codes.join(',')}`);
+      assert.ok(messages.some((m) => m.includes('jaringan ini')), `429 harus dari ember per-IP, pesan: ${messages[0] || '-'}`);
+    } finally {
+      try { child2.kill('SIGKILL'); } catch { /* noop */ }
+      child2 = null;
+    }
+  });
+});
+
 process.on('exit', () => {
   if (child) { try { child.kill('SIGKILL'); } catch { /* noop */ } }
+  if (child2) { try { child2.kill('SIGKILL'); } catch { /* noop */ } }
   try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* noop */ }
 });
 

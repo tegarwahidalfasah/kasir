@@ -111,19 +111,26 @@ router.post(MOUNT + '/sales/:id/refund', auth('sale.void'), http((req, res) => {
 
 // --------------------------------------------------------------- order tertahan
 router.get(MOUNT + '/pos/held', auth('sale.hold'), http((req, res) => res.json(
-  allRows(`SELECT id, invoice_no, note, created_at FROM transactions WHERE store_id = ? AND status = 'open' ORDER BY created_at DESC LIMIT 50`, req.storeId)
+  allRows(
+    `SELECT id, invoice_no, customer_name, created_at
+     FROM transactions WHERE store_id = ? AND status = 'open'
+     ORDER BY created_at DESC, rowid DESC LIMIT 50`, req.storeId)
 )));
 
 router.post(MOUNT + '/pos/hold', auth('sale.hold'), http((req, res) => {
-  const name = `HOLD${new Date().toISOString().slice(11, 19).replace(/:/g, '')}`;
+  const storeId = req.storeId;                 // sebelumnya tak dideklarasikan -> ReferenceError 500 (docs/11 §5)
+  const lines = normalizeLines(req.body?.lines, catalogFor(storeId));
+  if (!lines.length) throw new AppError(400, 'Keranjang masih kosong — tidak ada order untuk ditahan');
+  const name = nextHoldNo(storeId);
   const id = uid('hld');
   exec(
     `INSERT INTO transactions (id, store_id, branch_id, invoice_no, cashier_id, status, customer_name, note, grand_total, created_at)
      VALUES (?,?,?,?,?, 'open', ?, ?, 0, datetime('now'))`,
-    id, req.storeId, req.branchId, name, req.user.id, req.body?.customer_name || null,
-    JSON.stringify({ lines: normalizeLines(req.body?.lines, catalogFor(storeId)), selected: req.body?.selected_discount_ids || [] })
+    id, storeId, req.branchId, name, req.user.id, req.body?.customer_name || null,
+    JSON.stringify({ lines, selected: req.body?.selected_discount_ids || [] })
   );
-  res.status(201).json({ id, invoice_no: name });
+  audit({ userId: req.user.id, role: req.user.role, action: 'sale.hold', entity: 'transaction', entityId: id, storeId, after: { invoice_no: name, lines: lines.length } });
+  res.status(201).json({ id, invoice_no: name, lines, customer_name: req.body?.customer_name || null });
 }));
 
 router.get(MOUNT + '/pos/hold/:id', auth('sale.hold'), http((req, res) => {
@@ -153,4 +160,19 @@ function normalizeLines(lines, catalog = null) {
       selected_optional_raws: Array.isArray(l.selected_optional_raws) ? l.selected_optional_raws : [],
     }))
     .filter((l) => l.item_id && l.qty > 0);
+}
+
+/**
+ * Nomor order tertahan. `uq_tx_invoice` bersifat unik per toko, jadi dua kasir yang
+ * menahan order pada detik yang sama tidak boleh menghasilkan nomor kembar (500).
+ */
+function nextHoldNo(storeId) {
+  const hhmmss = new Date().toISOString().slice(11, 19).replace(/:/g, '');
+  let candidate = `HOLD${hhmmss}`;
+  for (let i = 2; i < 100; i += 1) {
+    const used = firstRow(`SELECT id FROM transactions WHERE store_id = ? AND invoice_no = ?`, storeId, candidate);
+    if (!used) return candidate;
+    candidate = `HOLD${hhmmss}-${i}`;
+  }
+  return `HOLD${hhmmss}-${uid('')}`;
 }

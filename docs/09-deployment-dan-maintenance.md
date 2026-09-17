@@ -86,6 +86,9 @@ Bila `ops/kasir.service` tidak dipakai, jalankan minimal dengan:
 | `KASIR_JWT_SECRET` | dibuat otomatis (berkas `.jwt-secret`, mode 0600) | **produksi: wajib diisi** |
 | `KASIR_TOKEN_TTL` | `43200` (12 jam) | umur sesi; layar kasir memanggil `POST /api/auth/refresh` |
 | `KASIR_BACKUP_DIR` | `<KASIR_DATA_DIR>/backups` | tujuan cadangan `npm run backup` |
+| `KASIR_TRUST_PROXY` | `loopback` (`true` bila `VERCEL` terdeteksi) | seberapa jauh `X-Forwarded-For` dipercaya: `false`/`0`, `1` (satu proxy), `2`, `loopback`, `uniquelocal`, atau CIDR (`10.0.0.0/8`). **Wajib disetel benar** — nilai longgar membuat pembatas login per-IP bisa dilewati dengan header palsu. Di belakang Caddy/nginx satu mesin (contoh `ops/`) biarkan default; bila proxy berada di mesin lain, set `1` |
+| `KASIR_LOGIN_LIMIT_IP` | `5` | percobaan login gagal per IP / 60 detik sebelum 429 |
+| `KASIR_LOGIN_LIMIT_USER` | `8` | percobaan login gagal per username / 60 detik (tidak bisa diakali dengan mengganti IP) |
 | `NODE_ENV` | — | `production` → pesan 5xx tidak dikirim ke klien |
 
 ## 5. Jadwal pemeliharaan yang disarankan
@@ -100,7 +103,7 @@ Bila `ops/kasir.service` tidak dipakai, jalankan minimal dengan:
 | **Bulanan 1-nya 04:00** | **latih pemulihan** ke pangkalan sementara | lihat §6 langkah 4 |
 | **Bulanan** | cek kapasitas disk & ukuran DB | `ops/maintenance.sh status` (menampilkan “ledger vs stok” + cadangan terakhir) |
 | **Triwulanan** | audit hak akses | `GET /api/users`, `GET /api/roles`; cabut yang tidak dipakai; ganti kata sandi |
-| **Sebelum rilis** | `npm run check && npm run test:qa` | 51 unit/integrasi + 28 smoke UI + 20 QA harus hijau |
+| **Sebelum rilis** | `npm run check && npm run test:qa` | 57 unit/integrasi + 28 smoke UI + 20 QA harus hijau (CI: `.github/workflows/ci.yml`) |
 
 `ops/maintenance.sh` adalah pembungkus tipis (kunci `flock` + log + notifikasi) di atas skrip
 `server/scripts/{backup,maintenance}.js`; contoh cron ada di [`ops/crontab.example`](../ops/crontab.example).
@@ -169,16 +172,33 @@ Tidak ada telemetri keluar — tidak ada panggilan ke layanan pihak ketiga di ko
 * [ ] Prosedur rollback dibaca & disetujui 1 orang selain installer.
 * [ ] Jam rilis disepakati; ada kanal pelaporan bug (WhatsApp/grup) + penanggung jawab.
 
-## 10. Deployment ke Platform Vercel
+## 10. Vercel = jalur **demo/pratinjau**, bukan produksi
 
-Repositori ini juga mendukung deployment serverless ke **Vercel**:
+> **Keputusan proyek (17 Sep 2026): target produksi adalah VPS/systemd** seperti §1–§9 di atas
+> (atau container dengan volume persisten). Bagian ini dibiarkan untuk demo UI/pratinjau ke calon
+> pengguna, dan **jangan** dipakai mencatat penjualan sungguhan.
 
-- **Arsitektur Vercel**:
+Alasan teknis (rinci di `docs/11-analisis-2026-09-17.md` §10):
+
+- **DB di `/tmp` bersifat sementara dan per-instance.** Setiap container recycle menghapus seluruh
+  transaksi; dua instance/region punya DB berbeda-beda. Tidak ada cara mencadangkan atau memulihkan
+  data yang berarti di model ini.
+- **Rahasia JWT ikut hilang** (`/tmp/.jwt-secret`) → semua sesi gugur tiap cold start; kasir
+  terlempar ke layar login tanpa sebab yang terlihat.
+- **Auto-seed mengisi kredensial demo publik.** `api/index.js` menjalankan `runSeed()` bila tabel
+  `stores` kosong, sehingga deployment publik memiliki user `budi` dengan kata sandi `rahasia123`
+  yang tercantum di README. Siapa pun yang menemukan URL-nya menjadi pemilik toko.
+
+Bila suatu saat serverless tetap diinginkan, syaratnya: DB eksternal (Turso/libSQL atau Postgres)
+di balik lapisan `server/src/db/index.js`, `KASIR_JWT_SECRET` wajib di lingkungan produksi
+(gagal start bila kosong), dan auto-seed ditutup di balik flag eksplisit (`KASIR_AUTOSEED=1`).
+
+- **Arsitektur Vercel (apa adanya)**:
   - Frontend SPA (Vite + React) dibuild otomatis via `npm run build` dan disajikan lewat edge CDN Vercel (`client/dist`).
   - Backend API Express disajikan sebagai Vercel Serverless Function melalui `api/index.js` dengan rewrites di `vercel.json`.
   - Database SQLite menggunakan direktori `/tmp` (`KASIR_DATA_DIR=/tmp`) dan otomatis melakukan auto-seed data demo saat inisialisasi awal.
-- **Langkah Deploy**:
+- **Langkah Deploy (demo)**:
   1. Hubungkan repositori Git ke Vercel via Dashboard Vercel atau jalankan `npx vercel`.
   2. Vercel mendeteksi file `vercel.json` secara otomatis.
-  3. Konfigurasi selesai dan URL pratinjau/produksi langsung aktif.
+  3. Konfigurasi selesai dan URL pratinjau langsung aktif — beri label "demo" dan ganti kata sandi akun demo bila URL dibagikan.
 

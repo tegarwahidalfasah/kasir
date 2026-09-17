@@ -40,11 +40,15 @@ const wait = (proc, marker, ms = 120000) => new Promise((resolve, reject) => {
 });
 
 const cleanup = () => {
+  // SIGTERM lalu SIGKILL: server anak harus benar-benar mati, bila tidak port 4399
+  // tetap dipegang orphan dan run berikutnya menguji DB lama tanpa sadar.
   try { child?.kill('SIGTERM'); } catch { }
+  try { child?.kill('SIGKILL'); } catch { }
   fs.rmSync(tmp, { recursive: true, force: true });
   if (!REUSE) { try { fs.rmSync(DATA_DIR, { recursive: true, force: true }); } catch { } }
 };
 process.on('SIGINT', () => { cleanup(); process.exit(130); });
+process.on('exit', cleanup);   // jaminan terakhir di jalur keluar mana pun
 
 try {
   let api = REUSE;
@@ -70,8 +74,12 @@ try {
     define: { 'process.env.NODE_ENV': '"development"', 'process.env.KASIR_API': JSON.stringify(api) },
   });
 
-  await import(pathToFileURL(bundle).href);
+  // entry melaporkan jumlah kegagalan lewat ekspor (bukan process.exit) supaya
+  // runner tetap sempat membersihkan server anak & direktori sementara.
+  const mod = await import(pathToFileURL(bundle).href);
+  const fails = Number(mod?.smokeFails) || 0;
   cleanup();
+  process.exit(fails ? 1 : 0);
 } catch (err) {
   console.error('\n❌ smoke UI gagal:', err.message);
   cleanup();

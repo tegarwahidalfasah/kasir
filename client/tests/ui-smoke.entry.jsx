@@ -166,5 +166,8 @@ for (const w of [58, 72, 80, 240]) {
 }
 
 console.log(fails ? `\n${fails} pemeriksaan UI gagal\n` : '\n🎉 smoke UI lolos\n');
-process.exit(fails ? 1 : 0);
+// JANGAN process.exit() di sini: bundel ini di-import oleh ui-smoke.mjs, dan keluar
+// paksa membuat runner mati sebelum cleanup() -> server anak jadi orphan di port 4399
+// sehingga run berikutnya diam-diam menguji DB kotor (docs/11 §13). Runner yang keluar.
+export const smokeFails = fails;
 
