@@ -21,17 +21,38 @@ const CLIENT_DIST = candidateDistPaths.find((p) => fs.existsSync(p)) || candidat
 const PORT = Number(process.env.PORT || 4000);
 const started = Date.now();
 
+/**
+ * Nilai `trust proxy` Express. Tanpa env: 'loopback' (hanya proxy di mesin yang sama
+ * yang dipercaya -> aman untuk deployment ops/ default, XFF dari internet diabaikan).
+ * Di Vercel edge yang menormalkan XFF, default-nya `true` agar req.ip tetap IP klien
+ * (bila tidak, seluruh pengguna berbagi satu ember pembatas login).
+ * KASIR_TRUST_PROXY=false | 0 | 1 | 2 | loopback | uniquelocal | 10.0.0.0/8
+ */
+export function trustProxySetting(raw = process.env.KASIR_TRUST_PROXY) {
+  if (raw == null || raw === '') return process.env.VERCEL ? true : 'loopback';
+  const v = String(raw).trim();
+  if (v === 'false' || v === '0' || v === 'off') return false;
+  if (v === 'true' || v === '*') return true;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : v;
+}
+
 export function createApp() {
   const app = express();
-  app.set('trust proxy', true);
+  // `trust proxy: true` mempercayai X-Forwarded-For kiriman KLIEN sehingga pembatas
+  // login per-IP bisa dilewati dengan header palsu (docs/11 §6). Default: hanya hop
+  // loopback yang dipercaya (Caddy/nginx satu mesin, seperti di ops/). Di produksi,
+  // set KASIR_TRUST_PROXY=1 (satu proxy) atau CIDR proxy Anda.
+  app.set('trust proxy', trustProxySetting());
   app.disable('x-powered-by');
 
   app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'same-origin');
     // struk & logo disimpan sebagai data-URL -> perlu img-src data:
+    // frame-ancestors 'self': aplikasi kasir tidak boleh dibingkai situs lain (clickjacking)
     res.setHeader('Content-Security-Policy',
-      "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self' data:; base-uri 'self'; frame-ancestors *");
+      "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'");
     next();
   });
 
@@ -87,6 +108,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   createApp().listen(PORT, '0.0.0.0', () => {
     console.log(`✅ Kasir API   → http://0.0.0.0:${PORT}/api/health`);
     console.log(`   DB         → ${DB_FILE}`);
+    console.log(`   trust proxy→ ${JSON.stringify(trustProxySetting())} (X-Forwarded-For hanya dipercaya dari hop ini)`);
     console.log(fs.existsSync(CLIENT_DIST) ? `   Web        → http://0.0.0.0:${PORT}/ (build client)` : `   Web        → belum di-build (npm run build)`);
   });
 }

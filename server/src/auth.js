@@ -2,7 +2,7 @@
 //  Autentikasi ringan tanpa dependency eksternal.
 //  - Password: scrypt (Node builtin) + salt per user
 //  - Token   : JWT HS256 dibuat manual (header.payload.signature)
-//  - Rate limit login: in-memory (5 percobaan / 60 detik / IP)
+//  - Rate limit login: in-memory, dua ember/60 detik (per-IP 5x, per-username 8x)
 // ===========================================================================
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -73,19 +73,44 @@ export function verifyToken(token) {
 }
 
 // -------------------------------------------------------------- rate limiting
+// Dua ember per 60 detik: per-IP (mudah dipalsukan lewat XFF bila proxy salah
+// dikonfigurasi) dan per-username (tidak bisa diakali dengan mengganti IP).
+// Keduanya in-memory: hilang saat restart dan tidak berbagi antar proses — untuk
+// produksi multi-proses/serverless pindahkan ke store bersama (lihat docs/11 §6).
 const attempts = new Map();
-export function tooManyAttempts(ip) {
-  const rec = attempts.get(ip);
+const WINDOW_MS = 60_000;
+const IP_LIMIT = Math.max(1, Number(process.env.KASIR_LOGIN_LIMIT_IP) || 5);
+const USER_LIMIT = Math.max(1, Number(process.env.KASIR_LOGIN_LIMIT_USER) || 8);
+const MAX_BUCKETS = 20_000;   // XFF palsu tak boleh membuat Map tumbuh tanpa batas
+
+function prune() {
+  const cutoff = Date.now() - WINDOW_MS;
+  for (const [key, rec] of attempts) if (rec.first < cutoff) attempts.delete(key);
+  if (attempts.size > MAX_BUCKETS) attempts.clear();   // kondisi diserang: buang semua, mulai lagi
+}
+
+function hit(key, limit) {
+  const rec = attempts.get(key);
   if (!rec) return false;
-  if (Date.now() - rec.first > 60_000) { attempts.delete(ip); return false; }
-  return rec.count >= 5;
+  if (Date.now() - rec.first > WINDOW_MS) { attempts.delete(key); return false; }
+  return rec.count >= limit;
 }
-export function clearAttempts(ip) { attempts.delete(ip); }
-export function bumpAttempt(ip) {
-  const rec = attempts.get(ip);
-  if (!rec || Date.now() - rec.first > 60_000) attempts.set(ip, { first: Date.now(), count: 1 });
+
+function bump(key) {
+  const rec = attempts.get(key);
+  if (!rec || Date.now() - rec.first > WINDOW_MS) attempts.set(key, { first: Date.now(), count: 1 });
   else rec.count += 1;
+  if (attempts.size > MAX_BUCKETS / 2) prune();
 }
+
+export const userKey = (username) => 'u:' + String(username || '').trim().toLowerCase();
+
+export function tooManyAttempts(ip) { return hit(ip, IP_LIMIT); }
+export function tooManyUserAttempts(username) { return hit(userKey(username), USER_LIMIT); }
+export function clearAttempts(ip) { attempts.delete(ip); }
+export function clearUserAttempts(username) { attempts.delete(userKey(username)); }
+export function bumpAttempt(ip) { bump(ip); }
+export function bumpUserAttempt(username) { bump(userKey(username)); }
 
 // ------------------------------------------------------------------ login
 export function authenticate(username, password) {

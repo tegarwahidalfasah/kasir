@@ -83,6 +83,8 @@ Roadmap menyebut stack "misalnya React/Vue, Node.js/PHP". Pertimbangan yang dipa
 | `KASIR_DB_PATH` | `<KASIR_DATA_DIR>/kasir.db` | Jalur lengkap berkas DB (menimpa `KASIR_DATA_DIR`) |
 | `KASIR_JWT_SECRET` | dibangkitkan otomatis & disimpan ke `<KASIR_DATA_DIR>/.jwt-secret` (mode 0600) | **wajib** diisi eksplisit di produksi |
 | `KASIR_TOKEN_TTL` | `43200` | Masa berlaku sesi **dalam detik** (43200 = 12 jam) |
+| `KASIR_TRUST_PROXY` | `loopback` (`true` bila `VERCEL`) | Seberapa jauh `X-Forwarded-For` dipercaya. **Wajib disetel benar**: nilai longgar membuat pembatas login per-IP bisa dilewati header palsu. Set `1`/CIDR bila proxy berada di mesin lain |
+| `KASIR_LOGIN_LIMIT_IP` · `KASIR_LOGIN_LIMIT_USER` | `5` · `8` | Percobaan login gagal per 60 detik untuk IP dan per username (in-memory, per proses) |
 | `NODE_ENV` | — | `production` → pesan error internal disembunyikan dari klien |
 
 ## 6. Konvensi yang dijaga di seluruh kode

@@ -4,8 +4,8 @@ Tiga lapisan pengujian, semuanya jalan tanpa dependency tambahan dan **tanpa men
 (masing-masing membuat `KASIR_DATA_DIR` sementara sendiri).
 
 ```bash
-npm test          # unit + integrasi: 51 tes (pricing 16 · stok/BOM 14 · API 21) · ±5 s
-npm run test:ui   # smoke UI (jsdom + React nyata) 28 pemeriksaan · ±26 s
+npm test          # unit + integrasi: 57 tes (pricing 16 · stok/BOM 14 · API 27) · ±5 s
+npm run test:ui   # smoke UI (jsdom + React nyata) 28 pemeriksaan · ±27 s
 npm run test:qa   # QA transaksi massal: 20 pemeriksaan · ±10 s (400 struk)
 npm run check     # npm test + test:ui + build client
 ```
@@ -131,6 +131,29 @@ Harness: `client/tests/ui-smoke.mjs` (menyalakan seed + API sementara, membundel
 * **Semua lebar struk** — `buildReceiptLines` untuk 58/72/80/240 mm: baris terlebar 30/40/46/30 ≤ batas kolom
   (32/42/48/120) → nama barang panjang tidak membuat struk meluber.
 * `ui-smoke.mjs` **berhenti dengan kode ≠ 0** bila ada assertion gagal (dipakai di CI/`npm run check`).
+  Sejak 17 Sep 2026 entry tidak lagi memanggil `process.exit()` sendiri: jumlah kegagalan diekspor
+  (`smokeFails`) dan **runner** yang membersihkan server anak lalu keluar. Sebelumnya proses API
+  sementara jadi orphan di port 4399 setiap kali ada assertion gagal, sehingga run berikutnya
+  diam-diam menguji DB kotor run sebelumnya (`docs/11-analisis-2026-09-17.md` §13).
+
+### Putaran verifikasi ketiga (17 Sep 2026) — analisis `docs/11`
+
+`npm run test:ui` kedapatan **merah** di `main` (27/28): assertion "ledger menyimpan gerakan untuk
+`KS…`" gagal. Penyebabnya bukan UI, melainkan stempel waktu: `seed.js` menulis riwayat memakai
+komponen waktu **lokal** sedangkan runtime menulis **UTC** (`nowIso()`), sehingga 67 baris seed
+bertanggal "masa depan" mendorong gerakan struk baru ke peringkat 68 di `ORDER BY created_at DESC`
+— di luar jendela `limit=60`. Perbaikan pada putaran ini:
+
+| Perubahan | Berkas | Efek |
+|---|---|---|
+| Riwayat seed ditulis dalam UTC (jam bisnis 08:00–20:00 WIB = 01:00–13:00 UTC) dan **tidak pernah melewati waktu seed** | `server/scripts/seed.js` | 0 baris masa depan; gerakan terbaru kembali tampil di Ledger |
+| Pemecah seri urutan ledger: `created_at DESC, rowid DESC` (bukan `id` acak) | `server/src/inventory.js` | urutan deterministik untuk gerakan dalam detik yang sama |
+| Entry smoke UI mengekspor `smokeFails`; runner membersihkan server anak (`SIGTERM`+`SIGKILL`, `process.on('exit')`) | `client/tests/ui-smoke.{mjs,entry.jsx}` | tidak ada orphan/port terbawa; hasil CI reproduktif |
+| 6 tes API baru: alur order tertahan (tahan→daftar→lanjut→hapus), nomor hold unik, RBAC `sale.hold`, header CSP, brute force dengan XFF palsu, `KASIR_TRUST_PROXY=false` | `server/tests/api.test.js` | 51 → **57 tes**; menutup celah yang membuat bug `storeId is not defined` lolos |
+| CI GitHub Actions: `npm ci` → `npm test` → `test:ui` → `test:qa` → `build` (Node 22) | `.github/workflows/ci.yml` | "hijau sebelum rilis" kini ditegakkan mesin, bukan klaim dokumen |
+
+Hasil setelah perbaikan: `npm test` **57/57**, `npm run test:ui` **28/28** (exit 0),
+`npm run test:qa` **20/20**, `npm run build` sukses → `npm run check` hijau.
 
 ## 4. Cara menjalankan & menafsirkan
 

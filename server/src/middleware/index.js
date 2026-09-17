@@ -1,7 +1,7 @@
 // ===========================================================================
 //  Middleware: autentikasi (bearer token) + otorisasi (permission RBAC)
 // ===========================================================================
-import { verifyToken, tooManyAttempts } from '../auth.js';
+import { verifyToken, tooManyAttempts, tooManyUserAttempts } from '../auth.js';
 import { firstRow, loadSetting } from '../db/index.js';
 import { permissionsFor, loadRoleMatrix } from '../rbac.js';
 import { DEFAULTS } from '../config.js';
@@ -45,8 +45,16 @@ export const requirePerm = (perm) => (req, _res, next) => {
   next();
 };
 
+/**
+ * Pembatas percobaan login. Selain per-IP, juga per-username: header
+ * X-Forwarded-For yang dipalsukan tidak lagi memberi jatah tak terbatas.
+ */
 export const loginGuard = (req, _res, next) => {
-  if (tooManyAttempts(req.ip)) return next(new AppError(429, 'Terlalu banyak percobaan login, tunggu 60 detik'));
+  if (tooManyAttempts(req.ip)) return next(new AppError(429, 'Terlalu banyak percobaan login dari jaringan ini, tunggu 60 detik'));
+  const username = typeof req.body?.username === 'string' ? req.body.username : '';
+  if (username && tooManyUserAttempts(username)) {
+    return next(new AppError(429, 'Terlalu banyak percobaan untuk akun ini, tunggu 60 detik'));
+  }
   next();
 };
 
