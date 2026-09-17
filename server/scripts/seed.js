@@ -238,13 +238,23 @@ export function runSeed({ force = false, quiet = false } = {}) {
     [['kopisusu', 1], ['matcha', 1], ['croissant', 2]], [['croissant', 1]], [['americano', 2]],
   ];
   let created = 0;
+  const seedStartedAt = Date.now();
+  const pad = (n) => String(n).padStart(2, '0');
+  // Stempel riwayat ditulis dalam UTC — sama seperti nowIso()/datetime('now') di runtime.
+  // Jam bisnis toko (08:00–20:00 Asia/Jakarta, lihat settings.store.timezone) dikonversi
+  // ke UTC supaya tidak ada baris "dari masa depan": baris bertanggal masa depan menggeser
+  // ORDER BY created_at DESC dan menyembunyikan gerakan stok terbaru dari jendela limit
+  // (docs/11 §4). Apa pun yang jatuh setelah "sekarang" ditarik mundur acak ≤ 90 menit.
+  const utcStamp = (d) => `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:00`;
   for (let back = 29; back >= 0; back -= 1) {
     const day = new Date(Date.now() - back * 86400000);
-    const salesCount = 6 + Math.floor(rnd() * 9) + (day.getDay() === 0 || day.getDay() === 6 ? 4 : 0);
+    const salesCount = 6 + Math.floor(rnd() * 9) + (day.getUTCDay() === 0 || day.getUTCDay() === 6 ? 4 : 0);
     for (let s = 0; s < salesCount; s += 1) {
-      const hour = 8 + Math.floor(rnd() * 12);
-      const at = new Date(day.getFullYear(), day.getMonth(), day.getDate(), hour, Math.floor(rnd() * 60));
-      const stamp = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')} ${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}:00`;
+      const hour = 1 + Math.floor(rnd() * 12);   // 08:00–19:59 WIB = 01:00–12:59 UTC
+      const minute = Math.floor(rnd() * 60);
+      let at = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), hour, minute));
+      if (at.getTime() > seedStartedAt) at = new Date(seedStartedAt - Math.floor(rnd() * 90 * 60_000));
+      const stamp = utcStamp(at);
       const lines = combos[Math.floor(rnd() * combos.length)].map(([key, qty]) => ({ item_id: finId[key], qty }));
       const pm = Object.keys(pmIds)[Math.floor(rnd() * Object.keys(pmIds).length)];
       try {

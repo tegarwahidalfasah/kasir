@@ -85,9 +85,18 @@ npm run maintenance -- status              # ukuran DB, cadangan terakhir, stok 
 npm run maintenance -- restore <berkas> --yes
 ```
 
-## Deployment ke Vercel
+## Deployment
 
-Repositori ini telah dikonfigurasi penuh untuk deploy langsung ke **Vercel** (Vite SPA + Express Serverless API):
+**Produksi = VPS / systemd** (dokumen lengkap: [`docs/09-deployment-dan-maintenance.md`](docs/09-deployment-dan-maintenance.md),
+berkas siap pakai di [`ops/`](ops/): unit systemd yang di-harden, contoh Caddy/nginx, crontab cadangan).
+
+> ⚠️ **Vercel di bawah ini hanya untuk demo/pratinjau UI, bukan untuk mencatat penjualan sungguhan.**
+> Di lingkungan serverless, SQLite berada di `/tmp` yang **sementara dan per-instance** (transaksi hilang
+> saat container recycle), rahasia JWT ikut hilang (semua sesi gugur tiap cold start), dan API otomatis
+> men-seed **akun demo `budi`/`rahasia123`** yang tercantum di README ini. Rinciannya:
+> [`docs/09` §10](docs/09-deployment-dan-maintenance.md) dan [`docs/11` §10](docs/11-analisis-2026-09-17.md).
+
+Repositori ini telah dikonfigurasi untuk deploy langsung ke **Vercel** (Vite SPA + Express Serverless API):
 
 1. **Push ke Git / GitHub**:
    ```bash
@@ -137,8 +146,9 @@ kasir/
 │  ├─ src/ui.jsx · ui.css         komponen dasar + design token (tema dibaca lewat CSS var)
 │  ├─ src/features/               pos/ · inventory/ · report/ · alerts/ · admin/ · settings/ · receipt/
 │  └─ tests/                      smoke UI: env.js · ui-smoke.entry.jsx · ui-smoke.mjs
-├─ docs/                          10 dokumen (arsitektur → deployment → rencana beta)
-└─ ops/                           crontab, systemd, Caddyfile/nginx, pembungkus maintenance
+├─ docs/                          11 dokumen (arsitektur → deployment → rencana beta → analisis)
+├─ ops/                           crontab, systemd, Caddyfile/nginx, pembungkus maintenance
+└─ .github/workflows/ci.yml       CI: npm test → test:ui → test:qa → build (Node 22)
 ```
 
 ## Dokumen
@@ -155,6 +165,7 @@ kasir/
 | [docs/08-qa-simulasi.md](docs/08-qa-simulasi.md) | Hasil QA Fase 4: transaksi massal, akurasi BOM, kebocoran data, smoke UI |
 | [docs/09-deployment-dan-maintenance.md](docs/09-deployment-dan-maintenance.md) | Deployment, pencadangan, jadwal & prosedur pemeliharaan, rollback |
 | [docs/10-rilis-beta.md](docs/10-rilis-beta.md) | Rencana rilis beta ke pengguna awal |
+| [docs/11-analisis-2026-09-17.md](docs/11-analisis-2026-09-17.md) | Analisis repositori putaran 2: 15 temuan terverifikasi runtime + status perbaikan |
 
 ## Batasan yang diketahui (v0.1.0)
 

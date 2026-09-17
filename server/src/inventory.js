@@ -109,7 +109,9 @@ export function listMovements({ storeId, itemId, limit = 100, from, to, movement
      JOIN items i ON i.id = m.item_id
      LEFT JOIN users u ON u.id = m.created_by
      WHERE ${where.join(' AND ')}
-     ORDER BY m.created_at DESC, m.id DESC
+     /* created_at hanya presisi 1 detik dan kolom id acak -> rowid (urutan insert)
+        dipakai sebagai pemecah seri agar urutan ledger deterministik (docs/11 #4). */
+     ORDER BY m.created_at DESC, m.rowid DESC
      LIMIT ?`,
     ...params, Math.min(500, Number(limit) || 100)
   );

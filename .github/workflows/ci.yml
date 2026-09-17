@@ -1,0 +1,51 @@
+# ===========================================================================
+#  CI Kasir — menjalankan seluruh lapisan uji yang dipakai `npm run check`
+#  plus QA simulasi. Node 22 wajib: server memakai `node:sqlite` (>= 22.5).
+#  Lihat docs/08-qa-simulasi.md dan docs/11-analisis-2026-09-17.md §12.
+# ===========================================================================
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Uji backend + UI + QA + build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Pasang dependensi
+        run: npm ci
+
+      - name: Tes unit & API backend (npm test)
+        run: npm test
+
+      - name: Smoke UI (npm run test:ui)
+        run: npm run test:ui
+
+      - name: QA simulasi transaksi massal (npm run test:qa)
+        run: npm run test:qa
+
+      - name: Build SPA (npm run build)
+        run: npm run build
+
+      - name: Unggah artefak build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: client-dist
+          path: client/dist
+          retention-days: 7
+          if-no-files-found: warn

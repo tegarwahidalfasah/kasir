@@ -4,7 +4,7 @@
 import express from 'express';
 import { allRows, firstRow, exec, loadSetting } from '../db/index.js';
 import { authenticate, loginGuard } from '../middleware/index.js';
-import { authenticate as login, audit, signToken, verifyPassword, hashPassword, bumpAttempt, clearAttempts } from '../auth.js';
+import { authenticate as login, audit, signToken, verifyPassword, hashPassword, bumpAttempt, clearAttempts, bumpUserAttempt, clearUserAttempts } from '../auth.js';
 import { DEFAULTS } from '../config.js';
 import { ROLE_PRESETS, PERMISSIONS } from '../rbac.js';
 import { http, AppError } from '../lib/http.js';
@@ -19,8 +19,13 @@ router.post(MOUNT + '/auth/login', loginGuard, http((req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) throw new AppError(400, 'Username & password wajib diisi');
   const out = login(username, password);
-  if (out.error) { bumpAttempt(req.ip); throw new AppError(401, 'Username atau password salah'); }
-  clearAttempts(req.ip);                 // sukses -> kembalikan jatah percobaan per IP
+  if (out.error) {
+    bumpAttempt(req.ip);                 // ember per-IP
+    bumpUserAttempt(username);           // ember per-username (tahan XFF palsu)
+    throw new AppError(401, 'Username atau password salah');
+  }
+  clearAttempts(req.ip);                 // sukses -> kembalikan jatah percobaan
+  clearUserAttempts(username);
   audit({ userId: out.user.id, role: out.user.role, action: 'auth.login', entity: 'user', entityId: out.user.id, storeId: out.user.store_id, ip: req.ip });
   res.json({ token: out.token, user: publicUser(out.user) });
 }));

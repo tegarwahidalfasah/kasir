@@ -3,6 +3,58 @@
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/), nomor versi mengikuti
 [Semantic Versioning](https://semver.org/lang/id/). Tanggal memakai zona waktu toko (Asia/Jakarta).
 
+## [Unreleased] — Sprint 0 hasil analisis putaran 2 (2026-09-17)
+
+Sumber temuan: [`docs/11-analisis-2026-09-17.md`](docs/11-analisis-2026-09-17.md) (15 temuan terverifikasi
+dengan menjalankan aplikasi). Putaran ini mengerjakan **Sprint 0** (quick win berisiko rendah +
+membuat `npm run check` hijau kembali); temuan integritas data (retur berulang, snapshot retur,
+`forceConsumeRaw`, zona waktu sisi laporan) dijadwalkan di Sprint 1.
+
+### Diperbaiki
+
+- **`POST /api/pos/hold` selalu 500** (`storeId is not defined` di `server/src/routes/pos.js`) → fitur
+  *order tertahan* hidup kembali: keranjang kosong ditolak 400, nomor hold dijamin unik terhadap
+  `uq_tx_invoice` (dua kasir menahan pada detik yang sama tidak lagi bertabrakan), aksi dicatat ke
+  `audit_logs` (`sale.hold`), dan `GET /api/pos/held` mengembalikan `customer_name` alih-alih JSON mentah
+  di kolom `note`. (docs/11 §5)
+- **Pembatas login bisa dilewati `X-Forwarded-For` palsu** — `app.set('trust proxy', true)` mempercayai
+  header kiriman klien sehingga brute force tak terbatas (PIN 4 digit!). Kini `trust proxy` default
+  `'loopback'` dan dapat disetel lewat `KASIR_TRUST_PROXY` (`false|1|2|loopback|uniquelocal|CIDR`),
+  ditambah **ember per-username** (`KASIR_LOGIN_LIMIT_USER`, default 8/60 detik) yang tidak bisa diakali
+  dengan mengganti IP. Peta bucket dibatasi (`MAX_BUCKETS` + penyapuan berkala) agar XFF acak tidak
+  menjadi DoS memori. (docs/11 §6)
+- **CSP `frame-ancestors *` → `'self'`** + `object-src 'none'`: aplikasi kasir tidak bisa lagi dibingkai
+  situs lain (clickjacking pada tombol bayar/void). (docs/11 §9)
+- **Riwayat seed bertanggal "masa depan"** — `server/scripts/seed.js` menulis stempel dari komponen waktu
+  lokal sementara runtime menulis UTC, sehingga 67 baris seed menggeser `ORDER BY created_at DESC` dan
+  menyembunyikan gerakan stok terbaru dari `GET /api/stock/movements?limit=60`. Seed kini menulis UTC
+  (jam bisnis 08:00–20:00 WIB) dan menarik mundur apa pun yang melewati waktu seed; urutan ledger memakai
+  `rowid` sebagai pemecah seri (stempel hanya presisi 1 detik, `id` acak). (docs/11 §4 bagian seed/urutan)
+- **Smoke UI membocorkan proses server** — `client/tests/ui-smoke.entry.jsx` memanggil `process.exit()`
+  sendiri sehingga runner mati sebelum `cleanup()`: server anak jadi orphan di port 4399 dan run berikutnya
+  diam-diam menguji DB kotor. Entry kini mengekspor `smokeFails`; runner membersihkan (`SIGTERM`+`SIGKILL`
+  dan `process.on('exit')`) lalu keluar dengan kode yang benar. (docs/11 §13)
+
+### Ditambahkan
+
+- **CI GitHub Actions** (`.github/workflows/ci.yml`): Node 22 → `npm ci` → `npm test` → `npm run test:ui`
+  → `npm run test:qa` → `npm run build`, artefak `client/dist`. Sebelumnya dokumen menyebut "dipakai di CI"
+  padahal tidak ada workflow sama sekali. (docs/11 §12)
+- **6 tes regresi API** (`server/tests/api.test.js`, 51 → 57 tes): alur order tertahan
+  (tahan → daftar → lanjutkan → hapus + 404), nomor hold unik, RBAC `sale.hold`, header CSP,
+  brute force dengan XFF palsu (ember per-username), dan `KASIR_TRUST_PROXY=false` membuat XFF diabaikan
+  (ember per-IP). Tes-tes inilah yang membuat bug `storeId is not defined` tidak bisa lolos lagi.
+- Variabel lingkungan: `KASIR_TRUST_PROXY`, `KASIR_LOGIN_LIMIT_IP`, `KASIR_LOGIN_LIMIT_USER`
+  (didokumentasikan di `docs/09` §4 dan `docs/04` §2).
+
+### Diubah
+
+- `docs/09` §10 dan README: **Vercel ditandai sebagai jalur demo/pratinjau**, produksi = VPS/systemd
+  (SQLite di `/tmp` sementara & per-instance, rahasia JWT hilang tiap cold start, auto-seed menaruh
+  kredensial demo publik). Perubahan kode untuk menutup auto-seed dijadwalkan di Sprint 2. (docs/11 §10)
+- Dokumentasi disinkronkan untuk bagian yang tersentuh putaran ini: jumlah tes (docs/08, docs/09, docs/10),
+  CSP & pembatas login (docs/04), hasil putaran verifikasi ketiga (docs/08 §3).
+
 ## [0.1.0] — 2026-09-16
 
 Rilis internal: Fase 1–3 terimplementasi sebagai kode berjalan, Fase 4 berupa rangkaian uji + dokumen
