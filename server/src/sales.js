@@ -3,7 +3,7 @@
 //  PEMOTONGAN STOK Otomatis (barang jadi + seluruh bahan baku di BOM-nya).
 //  Semuanya dalam SATU transaksi DB: struk tercatat <=> stok terpotong.
 // ===========================================================================
-import { allRows, firstRow, exec, uid, nowIso, round2, loadSetting } from './db/index.js';
+import { allRows, firstRow, exec, uid, nowIso, round2, round6, loadSetting } from './db/index.js';
 import { DEFAULTS } from './config.js';
 import { calculatePrice, bomUnitCost } from './pricing.js';
 import { postMovement, reverseMovements } from './inventory.js';
@@ -126,13 +126,33 @@ export function createSale(p) {
     }
   }
 
+  // Tanpa `forceConsumeRaw`: penjualan memakai stok barang jadi lebih dulu bila ada, dan baru
+  // memotong bahan baku untuk sisanya. Flag itu dipakai jalur simulasi (`/items/:id/simulate`)
+  // dan retur data lama — lihat docs/03 §3.
   const plan = planStockImpact({
     lines: p.lines, catalog, recipes,
-    forceConsumeRaw: p.forceConsumeRaw === true,
   });
   if (plan.shortages.length && !taxCfg.allow_negative_stock) {
     const s = plan.shortages[0];
     throw new AppError(409, `Bahan baku untuk ${s.name} tidak cukup — maksimal ${s.max_by_raw} porsi tersisa`, { shortages: plan.shortages });
+  }
+
+  // Snapshot konsumsi per baris: persis apa yang AKAN dipotong plan di bawah (barang jadi
+  // dan/atau bahan baku). Retur memakai ini, sehingga tidak terpengaruh perubahan resep,
+  // harga bahan, atau naiknya stok barang jadi setelah transaksi (docs/11 §2 & §3).
+  const bomByLine = {};
+  const lineSnap = (id) => (bomByLine[id] ||= { finished: [], raw: [] });
+  for (const f of plan.finished) {
+    if (f.deduct_qty > 0) lineSnap(f.line_item_id || f.item_id).finished.push({ item_id: f.item_id, qty: round6(f.deduct_qty) });
+  }
+  for (const r of plan.raw) {
+    for (const m of r.lines) {
+      if (!m.line_item_id || !(m.raw_qty > 0)) continue;
+      const bucket = lineSnap(m.line_item_id).raw;
+      const found = bucket.find((x) => x.item_id === r.item_id);
+      if (found) found.qty = round6(found.qty + m.raw_qty);
+      else bucket.push({ item_id: r.item_id, qty: round6(m.raw_qty) });
+    }
   }
 
   const txId = uid('txn');
@@ -189,10 +209,11 @@ export function createSale(p) {
     exec(
       `INSERT INTO transaction_items
         (id, transaction_id, item_id, name_snapshot, item_type, qty, unit_price, line_discount, line_total,
-         cost_snapshot, addons_json)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+         cost_snapshot, addons_json, bom_json)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
       uid('txi'), txId, line.item_id, line.name_snapshot, line.item_type, line.qty, line.unit_price,
-      line.line_discount, line.line_total, line.cost_snapshot, JSON.stringify(line.addons || [])
+      line.line_discount, line.line_total, line.cost_snapshot, JSON.stringify(line.addons || []),
+      JSON.stringify(bomByLine[line.item_id] || { finished: [], raw: [] })
     );
   }
   if (payment) {
@@ -293,17 +314,32 @@ export function refundLine({ storeId, txId, itemId, qty, userId, reason }) {
   const refundAmount = refundMoney(tx, line, refundQty);
   const refundCost = round2((Number(line.cost_snapshot) || 0) * refundQty);
 
+  // Sumber kebenaran: snapshot konsumsi yang disimpan SAAT transaksi dibuat
+  // (`transaction_items.bom_json`). Sebelumnya retur menghitung ulang memakai resep &
+  // harga hari ini, sehingga perubahan resep (atau naiknya stok barang jadi) membuat
+  // stok yang kembali tidak sama dengan yang terpotong — docs/11 §2 & §3.
+  const snap = safeJson(line.bom_json, null);
+  // snapshot selalu ditulis lengkap (dua array) saat jual -> kehadirannya otoritatif, termasuk
+  // saat isinya kosong (barang non-stok). NULL hanya untuk data lama sebelum kolom ini ada.
+  const fromSnapshot = !!(snap && Array.isArray(snap.finished) && Array.isArray(snap.raw));
+  const f = line.qty > 0 ? refundQty / line.qty : 0;
   const catalog = catalogFor(storeId);
-  const recipes = recipesFor([itemId]);
-  const plan = planStockImpact({ lines: [{ item_id: itemId, qty: refundQty, addons: safeJson(line.addons_json, []) }], catalog, recipes, forceConsumeRaw: true });
+  const plan = fromSnapshot
+    ? {
+      finished: (snap.finished || []).map((x) => ({ item_id: x.item_id, deduct_qty: round6((Number(x.qty) || 0) * f) })),
+      raw: (snap.raw || []).map((x) => ({ item_id: x.item_id, qty: round6((Number(x.qty) || 0) * f) })),
+    }
+    // Data lama (dijual sebelum kolom ini ada) tidak punya snapshot -> hitung ulang dengan
+    // resep saat ini sebagai pendekatan terbaik yang tersedia.
+    : planStockImpact({ lines: [{ item_id: itemId, qty: refundQty, addons: safeJson(line.addons_json, []) }], catalog, recipes: recipesFor([itemId]) });
   const allowNeg = true;
   const moved = [];
-  for (const f of plan.finished) {
-    const m = postMovement({ storeId, itemId: f.item_id, type: 'return_in', qty: f.deduct_qty, unitCost: catalog[f.item_id]?.cost_price, refType: 'refund', refId: txId, reason: reason || 'Retur pelanggan', userId, allowNegative: allowNeg });
-    if (!m.skipped) moved.push({ item_id: f.item_id, qty: f.deduct_qty });
+  for (const x of plan.finished) {
+    const m = postMovement({ storeId, itemId: x.item_id, type: 'return_in', qty: x.deduct_qty, unitCost: catalog[x.item_id]?.cost_price, refType: 'refund', refId: txId, reason: reason || 'Retur pelanggan', userId, allowNegative: allowNeg });
+    if (!m.skipped) moved.push({ item_id: x.item_id, qty: x.deduct_qty });
   }
   for (const r of plan.raw) {
-    const m = postMovement({ storeId, itemId: r.item_id, type: 'return_in', qty: r.qty, unitCost: catalog[r.item_id]?.cost_price, refType: 'refund', refId: txId, reason: `Retur BOM ${line.name_snapshot}`, userId, allowNegative: allowNeg });
+    const m = postMovement({ storeId, itemId: r.item_id, type: 'return_in', qty: r.qty, unitCost: catalog[r.item_id]?.cost_price, refType: 'refund', refId: txId, reason: `${fromSnapshot ? 'Retur BOM ' : 'Retur BOM (tanpa snapshot) '}${line.name_snapshot}`, userId, allowNegative: allowNeg });
     if (!m.skipped) moved.push({ item_id: r.item_id, qty: r.qty });
   }
 
@@ -355,7 +391,15 @@ export function getSale(storeId, txId) {
      LEFT JOIN payment_methods pm ON pm.id = t.payment_method_id
      WHERE t.id = ? AND t.store_id = ?`, txId, storeId);
   if (!tx) throw new AppError(404, 'Transaksi tidak ditemukan');
-  const items = allRows(`SELECT * FROM transaction_items WHERE transaction_id = ? ORDER BY rowid ASC`, txId);
+  const items = allRows(`SELECT * FROM transaction_items WHERE transaction_id = ? ORDER BY rowid ASC`, txId).map((i) => {
+    const { bom_json, ...rest } = i;
+    return {
+      ...rest,
+      // jejak audit: apa yang BENAR-BENAR dipotong untuk baris ini saat transaksi dibuat
+      // (dipakai retur; null untuk data lama yang dijual sebelum kolom ini ada)
+      bom: safeJson(bom_json, null),
+    };
+  });
   const payments = allRows(
     `SELECT p.*, pm.name FROM transaction_payments p LEFT JOIN payment_methods pm ON pm.id = p.payment_method_id WHERE p.transaction_id = ?`, txId);
   const movements = allRows(`SELECT * FROM stock_movements WHERE ref_id = ? AND ref_type IN ('transaction','refund') ORDER BY created_at ASC`, txId);

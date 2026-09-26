@@ -24,7 +24,7 @@ selama **4 minggu**, dengan 1 pendampingan per toko. Keluaran yang diharapkan: k
 
 Sudah terpenuhi per 16 Sep 2026 (lihat [08-qa-simulasi.md](08-qa-simulasi.md)):
 
-- [x] 61 unit/integrasi backend hijau (`npm test`), termasuk uji isolasi antar toko, race 120 request, alur order tertahan, pembatas login, dan pagar retur (retur tidak bisa diulang).
+- [x] 67 unit/integrasi backend hijau (`npm test`), termasuk uji isolasi antar toko, race 120 request, alur order tertahan, pembatas login, pagar retur (retur tidak bisa diulang), dan retur berbasis snapshot BOM.
 - [x] 20/20 QA transaksi massal hijau — 400/400 struk, selisih BOM 0.0000, void mengembalikan seluruh stok, idempoten, tidak ada kebocoran kolom rahasia.
 - [x] 32 smoke UI hijau — 11 tampilan, alur login, alur bayar ↔ ledger ↔ stok, tema tersimpan, struk tidak meluber di 4 lebar kertas.
 - [x] Alat cadangan/pemulihan tersedia (`npm run backup`, `npm run maintenance -- status|verify|restore|prune|vacuum|health`).

@@ -16,7 +16,7 @@ Express 5  ── middleware: authenticate → authorize(permission) → handler
 Modul domain (pure-ish, menerima storeId/branchId)
    pricing.js  →  harga: subtotal, diskon, pajak, service, pembulatan
    bom.js      →  resep (BOM) + konsumsi bahan + kapasitas mentah
-   sales.js    →  POST /sales: validasi → ledger stok → snapshot struk
+   sales.js    →  POST /sales: validasi → ledger stok → snapshot struk + snapshot konsumsi BOM per baris
    inventory.js→  adjustment, produksi, terima PO, rekonsiliasi, valuasi
    stockhealth.js → kecepatan pemakaian, hari-tersisa, alert stok menipis
    rbac.js     →  20 permission & preset 5 role (dapat disunting per toko)
@@ -100,7 +100,7 @@ Roadmap menyebut stack "misalnya React/Vue, Node.js/PHP". Pertimbangan yang dipa
 
 * **Pindah ke PostgreSQL/MySQL**: semua query berada di `server/src/**` dan `schema.sql`; yang perlu disesuaikan hanya `AUTOINCREMENT`/ID teks (dibangkitkan aplikasi, jadi netral), `datetime('now')`, `strftime`, `INSERT OR IGNORE`, dan `VACUUM INTO` (cadangan; `db.backup()` tidak tersedia di `node:sqlite`). Lapisan domain (`pricing.js`, `bom.js`, `stockhealth.js`) tidak menyentuh sintaks SQLite.
 * **Multi-kasir**: `stock_movements` + `transactions` sudah menyimpan `store_id`/`branch_id`, jadi jejak per cabang sudah ada. Perlu dicatat: **belum ada pemisahan stok per cabang** (`items.stock_qty` satu nilai per toko), belum ada filter cabang di laporan, dan **belum ada endpoint transfer/mutasi antar cabang** — nilai `transfer` sudah diizinkan di CHECK `movement_type` tetapi belum ada yang menuliskannya. Menuju multi-cabang nyata berarti menambah `item_stock(store_id, branch_id, item_id)` atau kolom `branch_id` pada agregat stok.
-* **Kolom baru (migrasi aditif)**: daftarkan `['tabel', 'kolom', 'TIPE NOT NULL DEFAULT …']` di `ADDITIVE_COLUMNS` (`server/src/db/index.js`) → dipastikan ada saat boot, idempoten, dan DB lama yang sudah berisi data ikut ter-upgrade (`ALTER TABLE … ADD COLUMN` dijalankan sekali). Contoh: `transaction_items.refunded_qty` (pagar retur) dan `transactions.refund_total`/`refund_cost`.
+* **Kolom baru (migrasi aditif)**: daftarkan `['tabel', 'kolom', 'TIPE NOT NULL DEFAULT …']` di `ADDITIVE_COLUMNS` (`server/src/db/index.js`) → dipastikan ada saat boot, idempoten, dan DB lama yang sudah berisi data ikut ter-upgrade (`ALTER TABLE … ADD COLUMN` dijalankan sekali). Contoh: `transaction_items.refunded_qty` (pagar retur), `transaction_items.bom_json` (snapshot konsumsi per baris), dan `transactions.refund_total`/`refund_cost`.
   Batasnya: hanya penambahan kolom. Mengubah/menghapus kolom, mengubah CHECK constraint (mis. menambah status transaksi baru), atau backfill data **belum** ditangani — itu perlu langkah rilis bernomor versi (`PRAGMA user_version`) dan uji migrasi tersendiri.
 * **Menambah laporan**: tambah SQL agregat di `routes/reports.js` + `EXPORTS` untuk CSV; client tinggal memanggil `get('/reports/…')`.
 * **Menambah blok pengaturan**: tambah default di `config.js DEFAULTS` → otomatis terbaca `GET /api/settings` dan dapat disimpan `PUT /api/settings/:key` (tanpa migrasi).

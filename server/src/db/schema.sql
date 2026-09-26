@@ -304,6 +304,9 @@ CREATE TABLE IF NOT EXISTS transaction_items (
   line_total     REAL NOT NULL,
   cost_snapshot  REAL NOT NULL DEFAULT 0,
   addons_json    TEXT,
+  -- snapshot konsumsi barang ini saat dijual: { finished:[{item_id,qty}], raw:[{item_id,qty}] }.
+  -- Retur membalikkan data ini (bukan resep/harga hari ini) — lihat docs/11 §2 & §3.
+  bom_json       TEXT,
   -- berapa qty baris ini yang SUDAH diretur (pagar agar retur tidak bisa diulang
   -- tanpa batas -> stok tidak digandakan); kolom aditif, lihat migrateSchema() di db/index.js
   refunded_qty   REAL NOT NULL DEFAULT 0,

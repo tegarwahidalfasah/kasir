@@ -201,7 +201,8 @@ router.delete(MOUNT + '/payment-methods/:id', auth('setting.payment'), http((req
 router.post(MOUNT + '/receipt/preview', auth(), http((req, res) => {
   const receipt = { ...loadSetting(req.storeId, 'receipt', DEFAULTS.receipt), ...(req.body?.receipt_overrides || {}) };
   const last = firstRow(`SELECT * FROM transactions WHERE store_id = ? AND status = 'completed' ORDER BY created_at DESC LIMIT 1`, req.storeId);
-  const items = last ? allRows(`SELECT * FROM transaction_items WHERE transaction_id = ?`, last.id) : [];
+  // `bom_json` (snapshot konsumsi, docs/11 §2) adalah detail internal — tidak ikut ke payload pratinjau
+  const items = last ? allRows(`SELECT * FROM transaction_items WHERE transaction_id = ?`, last.id).map(({ bom_json, ...rest }) => rest) : [];
   res.json({
     receipt,
     store: loadSetting(req.storeId, 'store', DEFAULTS.store),

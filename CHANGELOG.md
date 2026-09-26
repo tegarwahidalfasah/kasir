@@ -11,11 +11,19 @@ Belum dirilis. Bagian ini menggabungkan tiga rangkaian pekerjaan:
    menyimpang dari kode.
 2. **Sprint 0 hasil analisis putaran 2** — perbaikan cepat dari
    [`docs/11-analisis-2026-09-17.md`](docs/11-analisis-2026-09-17.md) (15 temuan yang diverifikasi
-   dengan menjalankan aplikasi). Temuan integritas data (retur berulang, snapshot retur,
-   `forceConsumeRaw`, zona waktu sisi laporan) dijadwalkan di Sprint 1.
+   dengan menjalankan aplikasi). Temuan integritas data sisanya (zona waktu sisi laporan) dijadwalkan di Sprint 1.
 3. **Perbaikan tombol "Masuk"** pada layar login.
+4. **Perbaikan integritas retur** dari analisis `docs/11`: pagar retur berulang (#1), snapshot konsumsi per baris (#2),
+   dan `forceConsumeRaw` yang akhirnya dihormati mesin BOM (#3).
 
 ### Ditambahkan
+
+- **6 tes regresi snapshot BOM & `forceConsumeRaw`** (61 → **67 tes**): 4 di `server/tests/stock.test.js`
+  (mesin BOM memotong bahan walau stok jadi ada; retur memakai snapshot walau resep diubah; retur produk
+  `make_to_order` mengembalikan bahan; data lama tanpa snapshot tetap bisa diretur) dan 2 di
+  `server/tests/api.test.js` (jejak audit `items[].bom` + retur pasca-perubahan resep; `/items/:id/simulate`
+  & retur menghormati `forceConsumeRaw`). Tiga tes domain yang bergantung pada snapshot dijalankan terhadap
+  `sales.js` versi lama → **3 failing** (17 passing), membuktikan tesnya menangkap bug.
 
 - **CI GitHub Actions** (`.github/workflows/ci.yml`): dua job pada setiap push & pull request —
   `check` (uji unit backend + smoke UI jsdom + build SPA, artefak `client/dist` diunggah) dan
@@ -41,6 +49,27 @@ Belum dirilis. Bagian ini menggabungkan tiga rangkaian pekerjaan:
 
 ### Diperbaiki
 
+- **Retur memakai resep *hari ini*, bukan yang benar-benar terpotong saat jual** (temuan P0 #2 di
+  [`docs/11`](docs/11-analisis-2026-09-17.md)). Dulu `refundLine()` menghitung ulang dengan `planStockImpact`
+  memakai resep & `cost_price` **saat retur**, walaupun teks di UI menjanjikan snapshot. Karena resep/harga
+  bahan rutin berubah di F&B, stok yang kembali bisa berbeda jauh dari yang terpotong (dan selisihnya tidak
+  terlacak karena retur tidak membalik gerakan asli).
+  - **Snapshot konsumsi per baris**: `createSale()` menyimpan hasil `planStockImpact` baris itu ke kolom baru
+    `transaction_items.bom_json` (`{finished:[{item_id,qty}], raw:[{item_id,qty}]}`) di dalam transaksi yang sama.
+  - `refundLine()` membalikkan **tepat** snapshot tersebut, diskalakan `f = qty_retur / qty_baris`.
+    **Bukti**: jual 2 porsi (resep 30 gr → bahan terpotong 60 gr), resep lalu dinaikkan jadi 90 gr/porsi,
+    retur 2 porsi → stok kembali **60 gr** (cara lama: 180 gr, tiga kali lipat).
+  - Data lama (`bom_json` `NULL`) tetap bisa diretur dan jatuh ke perhitungan ulang; gerakan stoknya bertanda
+    `Retur BOM (tanpa snapshot) …` supaya bisa dibedakan saat audit.
+  - `GET /api/sales/:id` menyajikan jejak auditnya sebagai `items[].bom`; `POST /receipt/preview` tidak
+    ikut membocorkan kolom internal ini. Kolom bersifat **aditif** (`migrateSchema()`), diuji dengan DB
+    berskema lama: `[db] migrasi aditif diterapkan: transaction_items.bom_json`, data lama utuh.
+- **`forceConsumeRaw` diabaikan mesin BOM** (temuan P0 #3, kode mati). `planStockImpact()` menerima parameter
+  itu dari tiga pemanggil tetapi tidak pernah memakainya, sehingga niat "paksa potong bahan baku" tidak pernah
+  terjadi: pada penjualan/retur produk `make_to_order` yang kebetulan punya stok jadi, yang dipotong/dikembalikan
+  adalah **barang jadi**, bukan bahan baku yang benar-benar terpakai. Kini
+  `fromStock = forceConsumeRaw ? 0 : Math.min(qty, …)`, sehingga `/api/items/:id/simulate` kembali menampilkan
+  `deduct_raw` (bukan `deduct_finished`) dan jalur cadangan retur mengembalikan bahan seperti niat semula.
 - **Retur bisa diulang tanpa batas → stok bahan baku digandakan** (temuan P0 #1 di
   [`docs/11`](docs/11-analisis-2026-09-17.md), analisis Sprint 1). `refundLine()` hanya membatasi `qty`
   terhadap qty baris asli, jadi memanggil retur berulang-ulang mengembalikan stok yang sama setiap kali
@@ -148,9 +177,10 @@ Belum dirilis. Bagian ini menggabungkan tiga rangkaian pekerjaan:
 - Perbaikan **zona waktu** (memakai `stores.timezone` untuk `created_at`, laporan harian, nomor struk,
   dan filter tanggal) belum dikerjakan — lihat `docs/10` §2 untuk dampak & contohnya.
 - **Migrasi skema bernomor versi** (rollback/backfill/rebuild tabel) dan **shift kas** belum ada; urutan prioritasnya ada di `docs/10` §2.
-- **Sprint 1/2 (rencana, tercantum di `docs/11`)**: ~~retur berulang tanpa batas~~ (sudah diperbaiki), retur berbasis snapshot,
-  `forceConsumeRaw` yang diabaikan mesin BOM, zona waktu sisi laporan, permission per blok setting,
-  CSV formula injection, dan gating auto-seed Vercel.
+- **Sprint 1/2 (rencana, tercantum di `docs/11`)**: ~~retur berulang tanpa batas~~, ~~retur berbasis snapshot~~,
+  ~~`forceConsumeRaw` yang diabaikan mesin BOM~~ (ketiganya sudah diperbaiki), sisa: zona waktu sisi laporan,
+  permission per blok setting, CSV formula injection, 2 dari 3 rumus kapasitas yang mengabaikan `yield_pct`,
+  dan gating auto-seed Vercel.
 
 ## [0.1.0] — 2026-09-16
 

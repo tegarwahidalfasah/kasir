@@ -51,6 +51,7 @@ if (schema) {
 // bernomor, rollback, atau perubahan yang membangun ulang tabel (mis. mengubah CHECK).
 const ADDITIVE_COLUMNS = [
   ['transaction_items', 'refunded_qty', 'REAL NOT NULL DEFAULT 0'],
+  ['transaction_items', 'bom_json', 'TEXT'],
   ['transactions', 'refund_total', 'REAL NOT NULL DEFAULT 0'],
   ['transactions', 'refund_cost', 'REAL NOT NULL DEFAULT 0'],
 ];
@@ -103,7 +104,10 @@ export const exec = (sql, ...params) => db.prepare(sql).run(...params);
 
 export const uid = (prefix = '') => prefix + crypto.randomUUID().replace(/-/g, '').slice(0, 20);
 export const nowIso = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
-export const round2 = (n) => Math.round((Number(n) || 0) * 1e6) / 1e6;
+export const round6 = (n) => Math.round((Number(n) || 0) * 1e6) / 1e6;
+// `round2` adalah nama lama dari fungsi yang sama (dipakai luas untuk uang & qty).
+// 1e6 dipakai supaya qty bahan desimal (gram/ml) tidak terpangkas.
+export const round2 = round6;
 
 /** Simpan satu blok konfigurasi (JSON) per toko. */
 export function saveSetting(storeId, key, value, userId = null) {

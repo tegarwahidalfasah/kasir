@@ -4,7 +4,7 @@ Tiga lapisan pengujian, semuanya jalan tanpa dependency tambahan dan **tanpa men
 (masing-masing membuat `KASIR_DATA_DIR` sementara sendiri).
 
 ```bash
-npm test          # unit + integrasi: 61 tes (pricing 16 · stok/BOM 17 · API 28) · ±5 s
+npm test          # unit + integrasi: 67 tes (pricing 16 · stok/BOM 21 · API 30) · ±5 s
 npm run test:ui   # smoke UI (jsdom + React nyata) 32 pemeriksaan · ±27 s
 npm run test:qa   # QA transaksi massal: 20 pemeriksaan · ±10 s (400 struk)
 npm run check     # npm test + test:ui + build client
@@ -168,7 +168,19 @@ menggandakan stok. Diverifikasi dua lapis:
 | Retur sebagian | Struk `KS20260926-1319` (baris qty 2): retur 1 → `refund_amount` 22.193, status tetap `completed`, `refunded_qty=1`; omzet laporan Δ −22.193 (persis uang retur), qty barang −1, HPP ikut turun |
 | Migrasi DB lama | DB berskema lama (tanpa kolom baru) dibuka aplikasi → `[db] migrasi aditif diterapkan: transaction_items.refunded_qty, transactions.refund_total, transactions.refund_cost`; `refund_total=0` pada data lama, transaksi lama utuh |
 
-## 5. Cara menjalankan & menafsirkan
+## 5. Putaran kelima — retur berbasis snapshot & `forceConsumeRaw` (26 Sep 2026)
+
+Temuan P0 #2 dan #3 [`docs/11`](11-analisis-2026-09-17.md) diperbaiki. Intinya: retur kini membalikkan **apa yang
+benar-benar terpotong saat jual**, bukan resep/harga hari ini; dan mesin BOM akhirnya menghormati `forceConsumeRaw`.
+
+| Lapisan | Bukti |
+|---|---|
+| Tes regresi (**+6**, 61 → **67**) | 4 di `stock.test.js`: mesin BOM memotong bahan walau stok jadi tersedia (`forceConsumeRaw`), retur memakai snapshot walau resep diubah, retur `make_to_order` mengembalikan bahan bukan barang jadi, data lama tanpa snapshot tetap bisa diretur; 2 di `api.test.js`: jejak audit `items[].bom` + retur pasca-perubahan resep, serta `simulate`/retur menghormati `forceConsumeRaw`. Tiga tes domain dijalankan terhadap `sales.js` versi lama → **3 failing** (17 passing) |
+| Verifikasi HTTP #2 (satu server nyata) | Jual 2 porsi resep **30 gr** → bahan 5.000 → **4.940 gr** (terpakai 60 gr); `bom_json` tersimpan `{"finished":[],"raw":[{"item_id":"…","qty":60}]}`; resep diubah jadi **90 gr**/porsi; retur penuh → bahan kembali ke **5.000 gr** (60 gr, bukan 180 gr); alasan gerakan `Retur BOM …` |
+| Verifikasi HTTP #3 (stok jadi > 0) | Jual 1 porsi saat stok jadi 0 → bahan −100 ml; produksi 5 porsi → barang jadi 5, bahan −500 ml; retur → **bahan +100 ml**, **barang jadi Δ 0** (cara lama: barang jadi +1, bahan 0). Simulasi `POST /items/:id/simulate` kini `deduct_finished: []`, `deduct_raw: [{qty:120}]` |
+| Migrasi & data lama | Kolom `bom_json` di-`DROP` dari salinan DB 331 struk → boot aplikasi: `[db] migrasi aditif diterapkan: transaction_items.bom_json`, 331 struk/445 baris utuh; retur pada struk lama (`bom_json` NULL) → `200`, enam gerakan `return_in` bertanda `Retur BOM (tanpa snapshot) …` |
+
+## 6. Cara menjalankan & menafsirkan
 
 ```bash
 cd /home/user/kasir
@@ -187,7 +199,7 @@ Keluaran yang menunjukkan masalah:
 | smoke UI “Cannot find package 'jsdom'” | devDependency belum terpasang | `npm i` di root (`jsdom` + `esbuild` ada di `devDependencies`) |
 | smoke UI “Build failed … Unexpected \"catch\"” | sintaks JSX | perbaiki berkas; runner sengaja tidak membungkam error esbuild |
 
-## 6. Rencana pengujian lanjutan (sebelum v1.0)
+## 7. Rencana pengujian lanjutan (sebelum v1.0)
 
 1. **Uji properti acak untuk `pricing.js`** (diskon non-stackable, batas `max_discount`, pembulatan) — 500 kasus acak
    dibandingkan implementasi reference; saat ini 16 kasus tangan.

@@ -487,6 +487,55 @@ describe('api', () => {
 // ===========================================================================
 describe('penguatan (docs/11)', () => {
 
+  it('snapshot BOM: retur mengembalikan resep SAAT JUAL walau resep sudah diubah', async () => {
+    const raw = await must('/items', { method: 'POST', body: { name: 'Bahan Snapshot API', item_type: 'raw', unit: 'gr', cost_price: 400, opening_stock: 1000 } });
+    const fin = await must('/items', { method: 'POST', body: { name: 'Kopi Snapshot API', item_type: 'finished', selling_price: 15000, production_mode: 'make_to_order', tax_mode: 'exempt' } });
+    await must(`/items/${fin.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: raw.id, qty: 20 }] } });
+
+    const stockRaw = async () => ((await must('/pos/catalog')).raw.find((i) => i.id === raw.id)).stock_qty;
+    const before = await stockRaw();
+    const sale = await must('/sales', { method: 'POST', body: { lines: [{ item_id: fin.id, qty: 2 }] } });
+    assert.equal(await stockRaw(), before - 40, 'jual 2 porsi -> 40 gr');
+
+    // detail transaksi menyajikan jejak audit konsumsi (kolom bom_json)
+    const det = await must(`/sales/${sale.id}`);
+    assert.deepEqual(det.items[0].bom, { finished: [], raw: [{ item_id: raw.id, qty: 40 }] }, 'snapshot tersimpan di baris: ' + JSON.stringify(det.items[0].bom));
+
+    // resep dinaikkan 5x SETELAH transaksi
+    await must(`/items/${fin.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: raw.id, qty: 100 }] } });
+
+    const ref = await must(`/sales/${sale.id}/refund`, { method: 'POST', body: { item_id: fin.id, qty: 2, reason: 'uji snapshot' } });
+    assert.equal(ref.refund_amount, 30000);
+    assert.equal(await stockRaw(), before, 'yang kembali 40 gr (resep saat jual), BUKAN 200 gr');
+    const mv = (await must(`/sales/${sale.id}`)).movements.filter((m) => m.movement_type === 'return_in');
+    assert.equal(mv.length, 1, 'satu gerakan balik bahan');
+    assert.equal(Math.round(mv[0].qty), 40);
+  });
+
+  it('simulate & retur menghormati forceConsumeRaw saat stok barang jadi ada', async () => {
+    const raw = await must('/items', { method: 'POST', body: { name: 'Bahan MTO API', item_type: 'raw', unit: 'ml', cost_price: 60, opening_stock: 5000 } });
+    const fin = await must('/items', { method: 'POST', body: { name: 'Latte MTO API', item_type: 'finished', selling_price: 26000, production_mode: 'make_to_order', tax_mode: 'exempt' } });
+    await must(`/items/${fin.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: raw.id, qty: 120 }] } });
+    await must('/stock/produce', { method: 'POST', body: { item_id: fin.id, qty: 5 } });
+
+    // dulu forceConsumeRaw diabaikan -> deduct_raw kosong & deduct_finished terisi
+    const sim = await must(`/items/${fin.id}/simulate`, { method: 'POST', body: { qty: 1 } });
+    assert.equal(sim.deduct_finished.length, 0, 'stok jadi tidak diklaim untuk penjualan baru');
+    assert.equal(sim.deduct_raw.length, 1, 'bahan baku yang dihitung');
+    assert.equal(sim.deduct_raw[0].qty, 120);
+
+    // jual 1 porsi saat stok jadi ada: barang jadi yang benar-benar dipotong -> snapshot mencatatnya
+    const sale = await must('/sales', { method: 'POST', body: { lines: [{ item_id: fin.id, qty: 1 }] } });
+    const det = await must(`/sales/${sale.id}`);
+    assert.equal(det.items[0].bom.raw.length, 0, 'tidak memotong bahan (stok jadi dipakai)');
+    assert.equal(det.items[0].bom.finished[0].qty, 1, 'snapshot mencatat barang jadi yang dipotong');
+    assert.equal(Math.round((await must('/pos/catalog')).finished.find((i) => i.id === fin.id).stock_qty), 4);
+
+    // retur mengembalikan BARANG JADI (karena itu yang terpotong), bukan bahan
+    await must(`/sales/${sale.id}/refund`, { method: 'POST', body: { item_id: fin.id, qty: 1, reason: 'uji MTO' } });
+    assert.equal(Math.round((await must('/pos/catalog')).finished.find((i) => i.id === fin.id).stock_qty), 5, 'barang jadi kembali');
+  });
+
   it('order tertahan: tahan → daftar → lanjutkan → hapus (dulu 500 storeId is not defined)', async () => {
     const cat = await must('/pos/catalog', { as: 'cashier' });
     const item = cat.finished.find((i) => !i.is_non_stock && (i.stock_qty || 0) > 0) || cat.finished[0];

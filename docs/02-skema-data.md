@@ -88,7 +88,7 @@ Pembatalan struk membalik baris di dalam satu `tx()` (`reverseMovements` di `ser
 | Tabel | Kolom |
 |---|---|
 | `transactions` | `id`, `store_id`, `branch_id`, `invoice_no` (`{prefix}{YYYYMMDD}-{nomor urut 4 digit}`, contoh `KS20260916-1328`), `external_ref` **UNIQUE** (kunci idempotensi dari klien), `cashier_id`, `status` CHECK `('completed','voided','refunded','open')` (`open` = order tertahan), `customer_name`, `customer_phone`, `order_type` (teks bebas; nilai UI: `dine_in`, `take_away`, `delivery`, `online`; awal dari `pos.default_order_type`), `note`, `subtotal`, `discount_total`, `tax_total`, `service_total`, `rounding_total`, `grand_total`, `cost_total` (HPP → margin), `payment_method_id`, `paid_amount`, `change_amount`, `fee_total` (biaya metode bayar), `applied_discounts` (JSON aturan yang terpakai), `receipt_snapshot` (JSON struk terkunci), `refund_total` & `refund_cost` (akumulasi uang & HPP yang dikembalikan lewat retur sebagian; baris penuh → `status='refunded'`), `voided_at`, `void_reason`, `voided_by`, `created_at` · indeks `idx_tx_created`, `idx_tx_cashier` |
-| `transaction_items` | `id`, `transaction_id` (CASCADE), `item_id`→items (SET NULL, agar riwayat selamat bila barang dihapus), `name_snapshot`, `item_type`, `qty`, `unit_price`, `line_discount`, `line_total`, `cost_snapshot`, `addons_json` (rincian addon/ topping untuk struk & retur), `refunded_qty` (berapa qty baris ini yang **sudah** diretur — pagar agar retur tidak bisa diulang tanpa batas), `created_at` · indeks `idx_txitem_tx`, `idx_txitem_item` |
+| `transaction_items` | `id`, `transaction_id` (CASCADE), `item_id`→items (SET NULL, agar riwayat selamat bila barang dihapus), `name_snapshot`, `item_type`, `qty`, `unit_price`, `line_discount`, `line_total`, `cost_snapshot`, `addons_json` (rincian addon/ topping untuk struk & retur), `bom_json` (**snapshot konsumsi** baris ini saat transaksi dibuat: `{"finished":[{"item_id","qty"}],"raw":[{"item_id","qty"}]}` — dipakai retur agar membalikkan yang benar-benar terpotong, bukan resep hari ini), `refunded_qty` (berapa qty baris ini yang **sudah** diretur — pagar agar retur tidak bisa diulang tanpa batas), `created_at` · indeks `idx_txitem_tx`, `idx_txitem_item` |
 | `transaction_payments` | `id`, `transaction_id` (CASCADE), `payment_method_id`, `amount`, `reference`, `created_at` — mendukung pembayaran terbagi (tunai + QRIS) |
 
 ### Pagar retur (`refunded_qty`)
@@ -100,9 +100,15 @@ uangnya tidak pernah tercatat. Sekarang setiap retur menaikkan `refunded_qty` di
 Kolom ini aditif — DB lama ikut ter-upgrade otomatis saat boot, lihat `migrateSchema()` di `server/src/db/index.js`
 dan [01-arsitektur.md](01-arsitektur.md) §7.
 
-Baris item **tidak** menyimpan hasil BOM per baris; potongan bahan dapat direkonstruksi dari `item_id` + `qty` + `addons_json`
-(dipakai saat retur: `planStockImpact` dijalankan ulang), dan daftar `stock_movements` dengan `ref_type='transaction'` adalah
-bukti finalnya.
+### Snapshot konsumsi (`bom_json`) — sejak 26 Sep 2026
+
+Dulu baris item **tidak** menyimpan hasil BOM, sehingga retur menghitung ulang memakai resep & harga **hari itu** — kalau resep
+diubah setelah penjualan, stok yang kembali tidak sama dengan yang terpotong. Sekarang `createSale()` menulis hasil
+`planStockImpact` ke `transaction_items.bom_json` di dalam transaksi yang sama, dan `refundLine()` membalikkan **tepat** snapshot itu
+(diskalakan `qty_retur / qty_baris`). Data lama yang `bom_json`-nya `NULL` tetap bisa diretur dan jatuh ke perhitungan ulang
+(resep saat ini) — gerakan stoknya bertanda `Retur BOM (tanpa snapshot)`. Lihat [11-analisis-2026-09-17.md](11-analisis-2026-09-17.md) §2 & §3.
+
+Daftar `stock_movements` dengan `ref_type='transaction'`/`'refund'` tetap bukti final di ledger.
 
 ## 6. Konfigurasi toko (Fase 3) & pengawasan
 

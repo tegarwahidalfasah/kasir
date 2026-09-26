@@ -25,9 +25,9 @@ Batas body JSON 12 MB. Nomor versi & jumlah baris tersedia di `GET /api/health`.
 | POST | `/pos/preview` | `sale.create` | body `{lines:[{item_id, qty, unit_price?, addons?, discount?}], customer?, order_type?}` → harga + dampak bahan |
 | POST | `/sales` | `sale.create` | buat transaksi (body di §contoh); `external_ref` ganda → struk lama + `duplicated: true` (HTTP 200); `skip_alerts: true` menunda pindai peringatan |
 | GET | `/sales` | — | `?page=&limit=&from=&to=&status=&cashier_id=` · limit ≤ 200 · tanpa `receipt_snapshot` |
-| GET | `/sales/:id` | — | detail + `items[], movements[], payments[], snapshot` |
+| GET | `/sales/:id` | — | detail + `items[]` (tiap baris memuat `bom`: snapshot konsumsi saat jual, `null` untuk data lama), `movements[], payments[], snapshot` |
 | POST | `/sales/:id/void` | `sale.void` | `{reason}` → semua stok kembali. `409` bila status bukan `completed` **atau** transaksi sudah punya retur (stok akan kembali dua kali) |
-| POST | `/sales/:id/refund` | `sale.void` | `{item_id, qty, reason}` retur sebagian proporsional. Berpagar per baris: `409` bila qty melebihi sisa (`qty − refunded_qty`) atau baris sudah diretur penuh. Respons: `{id, item, refund_qty, refund_amount, remaining_qty, fully_refunded, status, movements[]}` |
+| POST | `/sales/:id/refund` | `sale.void` | `{item_id, qty, reason}` retur sebagian proporsional — membalikkan **snapshot** `bom_json` baris itu (resep yang berubah setelah jual tidak berpengaruh; baris lama tanpa snapshot dihitung ulang dengan resep saat ini). Berpagar per baris: `409` bila qty melebihi sisa (`qty − refunded_qty`) atau baris sudah diretur penuh. Respons: `{id, item, refund_qty, refund_amount, remaining_qty, fully_refunded, status, movements[]}` |
 | GET | `/pos/held` | `sale.hold` | order `status='open'` (maks 50) |
 | POST | `/pos/hold` | `sale.hold` | `{lines, customer_name}` → `{id, invoice_no:'HHMMSS'}` |
 | GET / DELETE | `/pos/hold/:id` | `sale.hold` | baca / buang order tertahan |
@@ -40,7 +40,7 @@ Batas body JSON 12 MB. Nomor versi & jumlah baris tersedia di `GET /api/health`.
 | GET | `/items/:id` | — (sudah disaring per toko) |
 | POST · PUT · DELETE | `/items` · `/items/:id` · `/items/:id` | `item.manage` (DELETE jadi nonaktif bila sudah terpakai) |
 | GET · PUT | `/items/:id/recipe` | — · `recipe.manage` |
-| POST | `/items/:id/simulate` `{qty, addons}` | — → `{input_qty, deduct_finished, deduct_raw[{…,stock_after}], shortages, max_servable}` |
+| POST | `/items/:id/simulate` `{qty, addons}` | — → `{input_qty, deduct_finished, deduct_raw[{…,stock_after}], shortages, max_servable}`. Memakai `forceConsumeRaw`: bahan baku selalu dihitung, stok barang jadi diabaikan |
 | GET · POST · PUT · DELETE | `/categories`… | — · `item.manage` |
 | GET · PUT | `/items/:id/addons` | — · `item.manage` (parent wajib milik toko) |
 
