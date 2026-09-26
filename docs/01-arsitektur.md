@@ -17,6 +17,7 @@ Modul domain (pure-ish, menerima storeId/branchId)
    pricing.js  →  harga: subtotal, diskon, pajak, service, pembulatan
    bom.js      →  resep (BOM) + konsumsi bahan + kapasitas mentah
    sales.js    →  POST /sales: validasi → ledger stok → snapshot struk + snapshot konsumsi BOM per baris
+   lib/tz.js   →  hari bisnis toko (zona dari settings.store.timezone) untuk laporan, nomor struk, filter tanggal
    inventory.js→  adjustment, produksi, terima PO, rekonsiliasi, valuasi
    stockhealth.js → kecepatan pemakaian, hari-tersisa, alert stok menipis
    rbac.js     →  20 permission & preset 5 role (dapat disunting per toko)

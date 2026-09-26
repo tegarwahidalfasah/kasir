@@ -4,7 +4,7 @@ Tiga lapisan pengujian, semuanya jalan tanpa dependency tambahan dan **tanpa men
 (masing-masing membuat `KASIR_DATA_DIR` sementara sendiri).
 
 ```bash
-npm test          # unit + integrasi: 67 tes (pricing 16 · stok/BOM 21 · API 30) · ±5 s
+npm test          # unit + integrasi: 77 tes (API 34 · zona waktu 6 · pricing 16 · stok/BOM 21) · ±8 s
 npm run test:ui   # smoke UI (jsdom + React nyata) 32 pemeriksaan · ±27 s
 npm run test:qa   # QA transaksi massal: 20 pemeriksaan · ±10 s (400 struk)
 npm run check     # npm test + test:ui + build client
@@ -180,7 +180,20 @@ benar-benar terpotong saat jual**, bukan resep/harga hari ini; dan mesin BOM akh
 | Verifikasi HTTP #3 (stok jadi > 0) | Jual 1 porsi saat stok jadi 0 → bahan −100 ml; produksi 5 porsi → barang jadi 5, bahan −500 ml; retur → **bahan +100 ml**, **barang jadi Δ 0** (cara lama: barang jadi +1, bahan 0). Simulasi `POST /items/:id/simulate` kini `deduct_finished: []`, `deduct_raw: [{qty:120}]` |
 | Migrasi & data lama | Kolom `bom_json` di-`DROP` dari salinan DB 331 struk → boot aplikasi: `[db] migrasi aditif diterapkan: transaction_items.bom_json`, 331 struk/445 baris utuh; retur pada struk lama (`bom_json` NULL) → `200`, enam gerakan `return_in` bertanda `Retur BOM (tanpa snapshot) …` |
 
-## 6. Cara menjalankan & menafsirkan
+## 6. Putaran keenam — zona waktu, permission blok setting, CSV & kapasitas (26 Sep 2026)
+
+Empat temuan sisa Sprint 1/2 [`docs/11`](11-analisis-2026-09-17.md) diperbaiki sekaligus: **#4 zona waktu**,
+**#7 permission per blok setting**, **#8 CSV formula injection**, **#11 rumus kapasitas `yield_pct`**.
+
+| Temuan | Perubahan | Bukti |
+|---|---|---|
+| #4 zona waktu | modul baru `server/src/lib/tz.js` (`businessDay`, `businessHour`, `tzOffsetSql`, `dayBoundsUtc`, `storeTimezone` + cache) dipakai laporan, nomor struk/PO, filter tanggal, proyeksi kehabisan | 6 tes `datetime.test.js` (5 gagal di kode lama: `KS20260926-` vs `KS20260927-`) + tes API: struk 01:00 WIB masuk hari WIB (`by_hour = [1]`, bukan `[18]`), 0 struk di tanggal UTC-nya, muncul di `GET /sales` & `/stock/movements` untuk tanggal WIB |
+| #7 permission blok | gerbang rute → `auth([4 perm])`, `\|\| setting.store` dihapus | API: manager ber-`setting.store` saja → `PUT /settings/tax` **403**, theme **403**, receipt **403**, store **200**, PPN tetap 11% |
+| #8 CSV | `csvCell()` menetralkan awalan `=+-@`/TAB/CR; angka tetap numerik | API: nama pelanggan `=HYPERLINK(...)` → `"'=HYPERLINK(...)"`, `grand_total` tetap `11000` |
+| #11 kapasitas | hapus 2 salinan rumus; `items.js` & `stockhealth.js` memakai `bom.js#rawCapacity()`; `yield_pct` > 100 / ≤ 0 → **400** | API + runtime: resep 10 gr, yield 50%, stok 1.000 gr → katalog **50**, simulate **50**, stock/health **50** (dulu 50/100/100) |
+| Regresi | — | 67 → **77 tes**; 4 tes API baru dijalankan terhadap kode lama → **4 failing** (30 passing) |
+
+## 7. Cara menjalankan & menafsirkan
 
 ```bash
 cd /home/user/kasir
@@ -199,7 +212,7 @@ Keluaran yang menunjukkan masalah:
 | smoke UI “Cannot find package 'jsdom'” | devDependency belum terpasang | `npm i` di root (`jsdom` + `esbuild` ada di `devDependencies`) |
 | smoke UI “Build failed … Unexpected \"catch\"” | sintaks JSX | perbaiki berkas; runner sengaja tidak membungkam error esbuild |
 
-## 7. Rencana pengujian lanjutan (sebelum v1.0)
+## 8. Rencana pengujian lanjutan (sebelum v1.0)
 
 1. **Uji properti acak untuk `pricing.js`** (diskon non-stackable, batas `max_discount`, pembulatan) — 500 kasus acak
    dibandingkan implementasi reference; saat ini 16 kasus tangan.
@@ -208,3 +221,6 @@ Keluaran yang menunjukkan masalah:
 3. **Uji beban multi-kasir sungguhan** (20 koneksi, 30 menit) + pengukuran `p95` `POST /sales`; sekarang hanya 120 permintaan serentak.
 4. **Perf SQLite berkala**: `PRAGMA integrity_check` + `page_count` dicatat mingguan dari hasil `npm run maintenance -- status`.
 5. **Playwright** di CI untuk alur cetak (butuh peramban nyata), dan uji printer termal fisik 58/80 mm.
+6. **Zona ber-DST**: offset saat ini diambil pada satu titik waktu (aman untuk Indonesia yang tanpa DST);
+   tambahkan kasus `America/New_York` di sekitar pergantian DST bila toko di zona itu mulai didukung.
+7. **Kepadatan UI**: smoke UI masih memakai jsdom — uji visual (lebar struk & tabel) belum otomatis.

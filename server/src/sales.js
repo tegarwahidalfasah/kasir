@@ -8,6 +8,7 @@ import { DEFAULTS } from './config.js';
 import { calculatePrice, bomUnitCost } from './pricing.js';
 import { postMovement, reverseMovements } from './inventory.js';
 import { recipesFor, planStockImpact } from './bom.js';
+import { businessDay, storeTimezone, dayBoundsUtc } from './lib/tz.js';
 import { generateAlerts } from './stockhealth.js';
 import { AppError } from './lib/http.js';
 
@@ -72,8 +73,13 @@ const safeJson = (s, fb) => { try { return s ? JSON.parse(s) : fb; } catch { ret
 export let QUIET_ALERTS = false;
 export const setQuietAlerts = (v) => { QUIET_ALERTS = !!v; };
 
-export function nextInvoiceNo(storeId, prefix = 'INV') {
-  const day = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+/**
+ * Nomor struk berikutnya: `{prefix}{YYYYMMDD}-{nnnn}`, dengan tanggal = HARI BISNIS toko
+ * (docs/11 §4). Dulu memakai tanggal UTC sehingga nomor berganti hari pukul 07:00 WIB —
+ * di tengah jam operasional. `at` bisa diisi untuk pengujian.
+ */
+export function nextInvoiceNo(storeId, prefix = 'INV', at = new Date()) {
+  const day = businessDay(storeTimezone(storeId), at).replace(/-/g, '');
   const base = `${prefix}${day}-`;
   // mulai dari nomor terbesar hari ini (bukan 20 percobaan dari 1000) supaya nomor tetap rapi
   // walau data historis/seed sudah memakai ribuan nomor pertama.
@@ -362,11 +368,16 @@ export function refundLine({ storeId, txId, itemId, qty, userId, reason }) {
   };
 }
 
-export function listSales(storeId, { from, to, limit = 100, offset = 0, status, cashierId } = {}) {
+const PLAIN_DAY = /^\d{4}-\d{2}-\d{2}$/;
+/** Tanggal polos ('2026-09-27') dari UI = hari bisnis TOKO, bukan hari UTC (docs/11 §4). */
+const dayBoundary = (value, timezone, end) => (PLAIN_DAY.test(value) ? dayBoundsUtc(value, timezone, end) : value);
+
+export function listSales(storeId, { from, to, limit = 100, offset = 0, status, cashierId, timezone } = {}) {
+  const tz = timezone || storeTimezone(storeId);
   const where = ['t.store_id = ?'];
   const params = [storeId];
-  if (from) { where.push('t.created_at >= ?'); params.push(from); }
-  if (to) { where.push('t.created_at <= ?'); params.push(to + ' 23:59:59'); }
+  if (from) { where.push('t.created_at >= ?'); params.push(dayBoundary(from, tz, false)); }
+  if (to) { where.push('t.created_at <= ?'); params.push(dayBoundary(to, tz, true)); }
   if (status) { where.push('t.status = ?'); params.push(status); }
   if (cashierId) { where.push('t.cashier_id = ?'); params.push(cashierId); }
   const rows = allRows(

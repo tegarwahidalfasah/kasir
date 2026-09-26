@@ -24,7 +24,7 @@ selama **4 minggu**, dengan 1 pendampingan per toko. Keluaran yang diharapkan: k
 
 Sudah terpenuhi per 16 Sep 2026 (lihat [08-qa-simulasi.md](08-qa-simulasi.md)):
 
-- [x] 67 unit/integrasi backend hijau (`npm test`), termasuk uji isolasi antar toko, race 120 request, alur order tertahan, pembatas login, pagar retur (retur tidak bisa diulang), dan retur berbasis snapshot BOM.
+- [x] 77 unit/integrasi backend hijau (`npm test`), termasuk uji isolasi antar toko, race 120 request, alur order tertahan, pembatas login, pagar retur (retur tidak bisa diulang), dan retur berbasis snapshot BOM.
 - [x] 20/20 QA transaksi massal hijau — 400/400 struk, selisih BOM 0.0000, void mengembalikan seluruh stok, idempoten, tidak ada kebocoran kolom rahasia.
 - [x] 32 smoke UI hijau — 11 tampilan, alur login, alur bayar ↔ ledger ↔ stok, tema tersimpan, struk tidak meluber di 4 lebar kertas.
 - [x] Alat cadangan/pemulihan tersedia (`npm run backup`, `npm run maintenance -- status|verify|restore|prune|vacuum|health`).
@@ -40,16 +40,14 @@ Belum (harus selesai sebelum undangan dikirim):
 
 ### Risiko teknis yang diketahui (per 26 Sep 2026)
 
-Ditemukan saat penelusuran kode setelah rilis 0.1.0 (temuan urutan pertama — **retur berulang tanpa batas** — sudah diperbaiki, lihat [11](11-analisis-2026-09-17.md) §1 dan CHANGELOG). Belum diperbaiki karena masing-masing
+Ditemukan saat penelusuran kode setelah rilis 0.1.0 (temuan urutan pertama — **retur berulang tanpa batas** — sudah diperbaiki, lihat [11](11-analisis-2026-09-17.md) §1 dan CHANGELOG). Sisa yang belum diperbaiki karena masing-masing
 menyentuh data/format yang sudah dipakai — perlu keputusan pemilik sebelum diubah:
 
-- **Zona waktu toko belum diterapkan pada perhitungan tanggal.** `stores.timezone` disimpan & dapat
-  disunting di layar Pengaturan, tetapi belum dibaca oleh mesin tanggal mana pun: `created_at` diisi
-  `datetime('now')` (UTC), laporan harian memakai `GROUP BY date(created_at)` (UTC), nomor struk dan
-  filter bawaan `from`/`to` memakai `toISOString()` (UTC), sedangkan laporan per jam memakai
-  `'localtime'` (zona waktu **server**, bukan toko). Akibatnya pada server ber-TZ UTC, transaksi
-  pukul 00:00–07:00 WIB masuk ke tanggal sebelumnya — tepat pada jam tutup/buka toko.
-  Uji manual: transaksi 27 Sep 00:30 WIB tampil sebagai 26 Sep dan berprefiks `KS20260926-`.
+- ~~**Zona waktu toko belum diterapkan pada perhitungan tanggal.**~~ ✅ **selesai 26 Sep 2026**:
+  `server/src/lib/tz.js` menurunkan hari bisnis toko dari `stores.timezone` (laporan harian & per jam,
+  nomor struk/PO, filter tanggal Riwayat Penjualan & Ledger, proyeksi kehabisan). Catatan DST: offset
+  diambil pada satu titik waktu — persis untuk zona tanpa DST (seluruh Indonesia), pergeseran ≤ 1 jam
+  hanya mungkin di sekitar pergantian DST. Zona tak dikenal jatuh ke WIB, bukan patah.
 - **Migrasi skema masih satu arah (aditif).** `schema.sql` idempoten + `migrateSchema()` sekarang
   menambahkan kolom baru secara otomatis ke DB lama (dipakai `transaction_items.refunded_qty`,
   `transactions.refund_total`, `refund_cost`; diuji dengan DB berskema lama — data lama tetap utuh).

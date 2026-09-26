@@ -31,6 +31,8 @@ madeNow          = Q − min(Q, stok_persediaan_barang_jadi)          // untuk M
 * `r.qty` — jumlah bahan **per 1 unit produk**, dalam satuan bahan (`items.unit` bahan; label `r.unit` disalin saat resep disimpan).
 * `r.waste_pct` — susut per baris resep (kulit, sisa potongan, tumpahan).
 * `p.yield_pct` — faktor yield proses pada **produk** (mis. 95 ⇒ bahan yang harus disiapkan 5,26% lebih banyak).
+  Nilai sah 1–100; `POST`/`PUT /api/items` menolak 400 di luar rentang itu (dulu mesin stok meng-clamp
+  diam-diam sehingga angka di master barang menyesatkan).
   Ditempatkan di induk karena susut proses milik produk, bukan per bahan.
 * `r.is_optional = 1` — hanya dipotong bila pelanggan memilih addon/topping yang memakai bahan itu
   (`line.addons[].raw_item_id == r.raw_item_id`) atau kasir mencentangnya lewat `line.selected_optional_raws`.
@@ -59,6 +61,12 @@ Saat retur, yang dibalikkan adalah **snapshot konsumsi** yang disimpan saat tran
 Baris lama tanpa snapshot memakai `addons_json` + resep saat ini sebagai pendekatan terbaik.
 
 ## 3. Kapasitas: berapa porsi masih bisa dilayani
+
+> **Satu rumus untuk semua endpoint (sejak 26 Sep 2026).** `bom.js#rawCapacity()` adalah satu-satunya
+> perhitungan kapasitas: `/pos/catalog.capacity`, `/items/:id/simulate.max_servable`, dan
+> `/stock/health.serve_capacity` (plus status alert) memakai fungsi yang sama. Sebelumnya dua tempat
+> menulis ulang rumusnya tanpa membagi `yield_pct`, sehingga laporan menjanjikan kapasitas dua kali
+> lebih banyak daripada yang bisa dibuat mesin stok (docs/11 §11).
 
 > `planStockImpact()` menerima `forceConsumeRaw` (sejak 26 Sep 2026 benar-benar dihormati): bila `true`, stok barang jadi
 > **diabaikan** dan bahan baku selalu dipotong — artinya "anggap produk ini dibuat dari bahan sekarang". Dipakai

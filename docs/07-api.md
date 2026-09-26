@@ -24,7 +24,7 @@ Batas body JSON 12 MB. Nomor versi & jumlah baris tersedia di `GET /api/health`.
 | GET | `/pos/catalog` | `item.view` \| `sale.create` \| `stock.view` | barang aktif + `addons[]`, `recipe[]`, `capacity`, `bom_preview`, kategori, harga, stok |
 | POST | `/pos/preview` | `sale.create` | body `{lines:[{item_id, qty, unit_price?, addons?, discount?}], customer?, order_type?}` → harga + dampak bahan |
 | POST | `/sales` | `sale.create` | buat transaksi (body di §contoh); `external_ref` ganda → struk lama + `duplicated: true` (HTTP 200); `skip_alerts: true` menunda pindai peringatan |
-| GET | `/sales` | — | `?page=&limit=&from=&to=&status=&cashier_id=` · limit ≤ 200 · tanpa `receipt_snapshot` |
+| GET | `/sales` | — | `?page=&limit=&from=&to=&status=&cashier_id=` · limit ≤ 200 · tanpa `receipt_snapshot`. `from`/`to` polos (`YYYY-MM-DD`) = **hari bisnis toko** |
 | GET | `/sales/:id` | — | detail + `items[]` (tiap baris memuat `bom`: snapshot konsumsi saat jual, `null` untuk data lama), `movements[], payments[], snapshot` |
 | POST | `/sales/:id/void` | `sale.void` | `{reason}` → semua stok kembali. `409` bila status bukan `completed` **atau** transaksi sudah punya retur (stok akan kembali dua kali) |
 | POST | `/sales/:id/refund` | `sale.void` | `{item_id, qty, reason}` retur sebagian proporsional — membalikkan **snapshot** `bom_json` baris itu (resep yang berubah setelah jual tidak berpengaruh; baris lama tanpa snapshot dihitung ulang dengan resep saat ini). Berpagar per baris: `409` bila qty melebihi sisa (`qty − refunded_qty`) atau baris sudah diretur penuh. Respons: `{id, item, refund_qty, refund_amount, remaining_qty, fully_refunded, status, movements[]}` |
@@ -40,7 +40,7 @@ Batas body JSON 12 MB. Nomor versi & jumlah baris tersedia di `GET /api/health`.
 | GET | `/items/:id` | — (sudah disaring per toko) |
 | POST · PUT · DELETE | `/items` · `/items/:id` · `/items/:id` | `item.manage` (DELETE jadi nonaktif bila sudah terpakai) |
 | GET · PUT | `/items/:id/recipe` | — · `recipe.manage` |
-| POST | `/items/:id/simulate` `{qty, addons}` | — → `{input_qty, deduct_finished, deduct_raw[{…,stock_after}], shortages, max_servable}`. Memakai `forceConsumeRaw`: bahan baku selalu dihitung, stok barang jadi diabaikan |
+| POST | `/items/:id/simulate` `{qty, addons}` | — → `{input_qty, deduct_finished, deduct_raw[{…,stock_after}], shortages, max_servable}`. Memakai `forceConsumeRaw`: bahan baku selalu dihitung, stok barang jadi diabaikan; `max_servable` memakai `rawCapacity()` yang sama dengan `/pos/catalog` & `/stock/health` |
 | GET · POST · PUT · DELETE | `/categories`… | — · `item.manage` |
 | GET · PUT | `/items/:id/addons` | — · `item.manage` (parent wajib milik toko) |
 
@@ -52,7 +52,7 @@ Respons: `{ok, recipe[], cost_price}` (HPP roll-up otomatis).
 | Metode | Jalur | Permission | Body / catatan |
 |---|---|---|---|
 | GET | `/stock/health` | `stock.view` \| `item.view` | `?days=&lookahead=` → `[{…, avg_daily, reorder_point_effective, days_to_stockout, stockout_date, serve_capacity, status, est_value, margin_pct}]` |
-| GET | `/stock/movements` | `stock.view` | `?item_id=&from=&to=&types=&limit=` |
+| GET | `/stock/movements` | `stock.view` | `?item_id=&from=&to=&types=&limit=` — `from`/`to` polos = hari bisnis toko |
 | GET | `/stock/consumption` | `stock.view` | `?days=&group=item\|day` |
 | GET | `/stock/integrity` | `system.maintenance` | → `{checked, mismatches[]}` |
 | POST | `/stock/reconcile` | `system.maintenance` | → `{checked, fixed}` |
@@ -73,7 +73,10 @@ Respons: `{ok, recipe[], cost_price}` (HPP roll-up otomatis).
 | POST | `/alerts/read/:id` | — | `:id` = `all` → seluruh alert 7 hari terakhir (per user); dicatat `alert.dismiss` |
 | GET | `/alerts/replenish` | `stock.purchase` \| `stock.view` | bahan yang perlu dibeli + jumlah disarankan |
 
-## Laporan — `routes/reports.js` (semua menerima `?from=&to=`, default 30 hari)
+## Laporan — `routes/reports.js` (semua menerima `?from=&to=`, default 30 hari **bisnis toko**)
+
+`from`/`to` dan `period` memakai hari bisnis `settings.store.timezone` (sejak 26 Sep 2026); grafik `by_hour`
+juga memakai jam toko, bukan `localtime` server.
 
 | Jalur | Isi |
 |---|---|
@@ -81,14 +84,14 @@ Respons: `{ok, recipe[], cost_price}` (HPP roll-up otomatis).
 | `GET /reports/raw-usage` | `{period, window_days, items[]}` — pemakaian, pembelian, susut, `avg_daily_use`, `days_to_stockout`, `stockout_date`, `status` |
 | `GET /reports/stock-movement` | `[{day, movement_type, qty_in, qty_out, lines}]` |
 | `GET /reports/inventory-valuation` | nilai persediaan per item (`stock_value`, margin) |
-| `GET /reports/export/:kind` | **`report.export`** · `kind ∈ sales \| movements \| stock` → CSV `text/csv` |
+| `GET /reports/export/:kind` | **`report.export`** · `kind ∈ sales \| movements \| stock` → CSV `text/csv`. Sel teks berawalan `=`, `+`, `-`, `@`, TAB, atau CR diberi apostrof (formula injection tidak tereksekusi di Excel); kolom angka tetap numerik |
 
 ## Kustomisasi — `routes/settings.js`
 
 | Jalur | Permission | Catatan |
 |---|---|---|
 | `GET /settings` | — | semua blok + `_meta` |
-| `PUT /settings/:key` | `setting.store` gerbang + per blok (`store`→setting.store, `tax`→setting.tax, `receipt`→setting.receipt, `theme`→setting.theme) | **replace** — kirim blok penuh; menu `theme` dinormalisasi + diaudit |
+| `PUT /settings/:key` | gerbang: salah satu `setting.store`\|`setting.tax`\|`setting.receipt`\|`setting.theme`; **per blok**: `store`/`pos`→`setting.store`, `tax`→`setting.tax`, `receipt`→`setting.receipt`, `theme`→`setting.theme` | **replace** — kirim blok penuh; menu `theme` dinormalisasi + diaudit; blok di luar hak user → **403** |
 | `POST` / `DELETE /branding/logo` | `setting.theme` \| `setting.store` · `setting.theme` | data URL ≤ ±1 MB (png/jpg/svg/webp); disimpan ke blok `theme` + `store` |
 | `GET /branding/palettes` | — | 8 preset `{name, accent, canvas, mode}` |
 | `GET /branding/brand` · `GET /public/brand` | — · publik | untuk layar login & judul |

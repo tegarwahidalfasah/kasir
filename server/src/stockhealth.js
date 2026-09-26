@@ -4,6 +4,8 @@
 //  - Days to stockout = stok tersedia / pemakaian harian rata-rata
 // ===========================================================================
 import { allRows, firstRow, exec, uid, round2 } from './db/index.js';
+import { rawCapacity as bomRawCapacity, recipesFor } from './bom.js';
+import { businessDay, storeTimezone } from './lib/tz.js';
 
 // sama dengan v_stock_health: pemakaian = penjualan + konsumsi BOM + koreksi turun (susut opname)
 const OUT_TYPES = `'sale_out','bom_consume','adjustment'`;
@@ -39,23 +41,22 @@ export function consumption({ storeId, days = 14, groupBy = 'day' }) {
  */
 const finiteCap = (n) => (Number.isFinite(n) ? Math.max(0, n) : null);
 
-/** Kapasitas produksi (porsi) dari stok bahan baku milik sebuah barang jadi. */
-function rawCapacity(itemId) {
-  const rows = allRows(
-    `SELECT r.qty, r.waste_pct, i.stock_qty FROM item_recipes r JOIN items i ON i.id = r.raw_item_id WHERE r.parent_id = ?`,
-    itemId);
-  if (!rows.length) return Infinity;
-  let cap = Infinity;
-  for (const r of rows) {
-    const per = (Number(r.qty) || 0) * (1 + (Number(r.waste_pct) || 0) / 100);
-    if (!per) continue;
-    cap = Math.min(cap, Math.floor((Number(r.stock_qty) || 0) / per + 1e-9));
-  }
-  return Number.isFinite(cap) ? cap : 0;
+/**
+ * Kapasitas produksi (porsi) dari stok bahan baku.
+ * Dulu ada salinan rumus di berkas ini yang LUPA membagi `yield_pct`, sehingga dasbor &
+ * status alert lebih optimis daripada mesin stok (docs/11 §11: 2.546 vs 1.273 porsi untuk
+ * item yield 50%). Sekarang memakai `bom.js` — satu-satunya rumus kapasitas.
+ * Resep semua item dimuat sekali (`recipesFor`) supaya tidak N+1 query.
+ */
+function capacityFor(itemId, catalog, recipes) {
+  if (!recipes[itemId]?.length) return Infinity;
+  return bomRawCapacity(itemId, catalog, recipes);
 }
 
-export function stockHealth({ storeId, days = 14, lookaheadDays = 7 } = {}) {
+export function stockHealth({ storeId, days = 14, lookaheadDays = 7, timezone } = {}) {
   const window = Math.max(1, Number(days) || 14);
+  // tanggal proyeksi kehabisan dihitung sebagai hari bisnis toko, bukan tanggal UTC (docs/11 §4)
+  const tz = timezone || storeTimezone(storeId);
   const rows = allRows(
     `SELECT i.id, i.name, i.item_type, i.unit, i.stock_qty, i.min_stock, i.reorder_point, i.safety_stock,
             i.lead_time_days, i.cost_price, i.selling_price, i.production_mode, i.yield_pct, i.supplier_name,
@@ -75,6 +76,10 @@ export function stockHealth({ storeId, days = 14, lookaheadDays = 7 } = {}) {
     `-${window} days`, ...(storeId ? [storeId, storeId] : [])
   );
 
+  // katalog & resep dimuat sekali untuk seluruh item (dipakai status made-to-order)
+  const catalog = Object.fromEntries(rows.map((r) => [r.id, { ...r, stock_qty: Math.max(0, Number(r.stock_qty) || 0) }]));
+  const recipes = recipesFor(rows.filter((r) => r.recipe_lines > 0).map((r) => r.id));
+
   return rows.map((r) => {
     const stock = Math.max(0, Number(r.stock_qty) || 0); // stok tak pernah negatif di laporan; selisih ditangani opname
     const avgDaily = round2((r.qty_out || 0) / window);
@@ -91,7 +96,7 @@ export function stockHealth({ storeId, days = 14, lookaheadDays = 7 } = {}) {
     const madeToOrder = r.item_type === 'finished' && r.production_mode === 'make_to_order';
     if (r.item_type === 'raw' || madeToOrder) {
       if (madeToOrder) {
-        const cap = rawCapacity(r.id);
+        const cap = capacityFor(r.id, catalog, recipes);
         if (cap <= 0) status = 'out';
         else if (cap < 3) status = 'critical';
         else if (r.qty_out > 0 && cap <= r.qty_out / window * lookaheadDays) status = 'warning';
@@ -106,7 +111,7 @@ export function stockHealth({ storeId, days = 14, lookaheadDays = 7 } = {}) {
       else if (floor > 0 && stock <= floor) status = 'warning';
     }
     const stockoutDate = daysLeft != null && daysLeft >= 0
-      ? new Date(Date.now() + daysLeft * 86400000).toISOString().slice(0, 10)
+      ? businessDay(tz, new Date(Date.now() + daysLeft * 86400000))
       : null;
     return {
       ...r,
@@ -114,7 +119,8 @@ export function stockHealth({ storeId, days = 14, lookaheadDays = 7 } = {}) {
       reorder_point_effective: rp,
       days_to_stockout: daysLeft,
       stockout_date: stockoutDate,
-      serve_capacity: finiteCap(madeToOrder ? rawCapacity(r.id) : (r.stock_qty > 0 ? Math.floor(r.stock_qty) : rawCapacity(r.id))),
+      serve_capacity: finiteCap(madeToOrder ? capacityFor(r.id, catalog, recipes)
+        : (r.stock_qty > 0 ? Math.floor(r.stock_qty) : capacityFor(r.id, catalog, recipes))),
       status,
       stock_display: stock,
       est_value: round2(stock * r.cost_price),

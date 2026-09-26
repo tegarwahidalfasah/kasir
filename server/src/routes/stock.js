@@ -9,6 +9,7 @@ import { stockHealth, generateAlerts, consumption } from '../stockhealth.js';
 import { recipesFor } from '../bom.js';
 import { DEFAULTS } from '../config.js';
 import { http, AppError } from '../lib/http.js';
+import { businessDay } from '../lib/tz.js';
 import { audit } from '../auth.js';
 
 export const router = express.Router();
@@ -41,6 +42,7 @@ router.get(MOUNT + '/stock/health', auth(['stock.view', 'item.view']), http((req
 router.get(MOUNT + '/stock/movements', auth('stock.view'), http((req, res) => res.json(listMovements({
   storeId: req.storeId, itemId: req.query.item_id, limit: Number(req.query.limit) || 100,
   from: req.query.from, to: req.query.to, movementTypes: req.query.types ? String(req.query.types).split(',') : null,
+  timezone: req.timezone,
 }))));
 
 router.get(MOUNT + '/stock/consumption', auth('stock.view'), http((req, res) => res.json(
@@ -133,7 +135,7 @@ router.post(MOUNT + '/purchase-orders', auth('stock.purchase'), http((req, res) 
   const items = Array.isArray(body.items) ? body.items.filter((i) => i.raw_item_id && Number(i.qty_ordered) > 0) : [];
   if (!items.length) throw new AppError(400, 'Minimal satu bahan baku dengan jumlah > 0');
   const poId = uid('po');
-  const poNo = body.po_number || `PO${new Date().toISOString().slice(0, 10).replace(/-/g, '')}-${String(Date.now()).slice(-4)}`;
+  const poNo = body.po_number || `PO${businessDay(req.timezone).replace(/-/g, '')}-${String(Date.now()).slice(-4)}`;
   const total = round2(items.reduce((s, i) => s + Number(i.qty_ordered) * (Number(i.unit_cost) || 0), 0));
   exec(
     `INSERT INTO purchase_orders (id, store_id, po_number, supplier_id, branch_id, status, order_date, expected_date, total_amount, note, created_by, created_at)

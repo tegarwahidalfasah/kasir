@@ -88,7 +88,7 @@ router.post(MOUNT + '/sales', auth('sale.create'), http((req, res) => {
 }));
 
 router.get(MOUNT + '/sales', auth(), http((req, res) => res.json(listSales(req.storeId, {
-  from: req.query.from, to: req.query.to, limit: Number(req.query.limit) || 50,
+  from: req.query.from, to: req.query.to, limit: Number(req.query.limit) || 50, timezone: req.timezone,
   offset: Number(req.query.offset) || 0, status: req.query.status, cashierId: req.query.cashier_id,
 }))));
 

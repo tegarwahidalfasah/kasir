@@ -19,7 +19,9 @@ const ROUTES = {
   '/sales': [lazy(() => import('./features/pos/SalesHistory.jsx')), 'sale.create'],
   '/alerts': [lazy(() => import('./features/alerts/AlertsPage.jsx')), 'stock.view'],
   '/users': [lazy(() => import('./features/admin/UsersPage.jsx')), 'user.manage'],
-  '/settings': [lazy(() => import('./features/settings/SettingsPage.jsx')), 'setting.store'],
+  // halaman Pengaturan berisi beberapa blok dengan hak berbeda — cukup punya salah satunya
+  '/settings': [lazy(() => import('./features/settings/SettingsPage.jsx')),
+    ['setting.store', 'setting.tax', 'setting.receipt', 'setting.theme']],
 };
 const KEY_PATH = {
   pos: '/pos', dashboard: '/dashboard', stock: '/stock', items: '/items', purchase: '/purchase',

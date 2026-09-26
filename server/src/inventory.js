@@ -5,6 +5,7 @@
 //  Aturan: JANGAN pernah UPDATE items.stock_qty dari file lain.
 // ===========================================================================
 import { firstRow, allRows, exec, uid, nowIso, round2 } from './db/index.js';
+import { storeTimezone, dayBoundsUtc } from './lib/tz.js';
 
 const EPS = 1e-9;
 
@@ -92,13 +93,16 @@ export function stockSnapshot(itemIds = []) {
   return Object.fromEntries(rows.map((r) => [r.id, r]));
 }
 
-export function listMovements({ storeId, itemId, limit = 100, from, to, movementTypes } = {}) {
+export function listMovements({ storeId, itemId, limit = 100, from, to, movementTypes, timezone } = {}) {
   const where = ['1=1'];
   const params = [];
   if (storeId) { where.push('m.store_id = ?'); params.push(storeId); }
   if (itemId) { where.push('m.item_id = ?'); params.push(itemId); }
-  if (from) { where.push('m.created_at >= ?'); params.push(from); }
-  if (to) { where.push('m.created_at <= ?'); params.push(to + ' 23:59:59'); }
+  // tanggal polos dari UI = hari bisnis toko; stempel penuh (ISO) dilewatkan apa adanya
+  const tz = timezone || storeTimezone(storeId);
+  const bound = (v, end) => (/^\d{4}-\d{2}-\d{2}$/.test(v) ? dayBoundsUtc(v, tz, end) : v);
+  if (from) { where.push('m.created_at >= ?'); params.push(bound(from, false)); }
+  if (to) { where.push('m.created_at <= ?'); params.push(bound(to, true)); }
   if (Array.isArray(movementTypes) && movementTypes.length) {
     where.push(`m.movement_type IN (${movementTypes.map(() => '?').join(',')})`);
     params.push(...movementTypes);

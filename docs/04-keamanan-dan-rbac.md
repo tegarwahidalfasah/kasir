@@ -76,7 +76,10 @@ Ancaman yang dijaga di v0.1.0:
 * Rute yang butuh role-level: `PUT /api/roles/:role` dan `POST /api/roles/reset` (`role.manage`), `GET /api/audit` (`role.manage` atau `system.maintenance`).
 * Rute dengan pilihan banyak permission memakai OR: `GET /api/users` (`user.manage`|`role.manage`),
   `GET /api/branding/palettes` (`setting.theme`|`setting.store`), `GET /api/alerts/replenish` (`stock.purchase`|`stock.view`).
-* **Perluat tambahan (per-rute, bukan per-middleware)** yang sudah dipakai: `setting.*` (blok mana yang boleh diubah menentukan permission),
+* **Perluat pembatas per-rute** yang sudah dipakai: `setting.*` — **ditegakkan per blok sejak 26 Sep 2026**: rute `PUT /api/settings/:key`
+  menerima keempat hak `setting.*`, lalu peta blok→permission yang memutuskan (`store`/`pos` → `setting.store`,
+  `tax` → `setting.tax`, `receipt` → `setting.receipt`, `theme` → `setting.theme`). Sebelumnya hak `setting.store`
+  adalah kunci master: pemiliknya bisa menurunkan PPN atau mengganti tema (docs/11 §7).
   `report.export` untuk unduh CSV, `system.maintenance` untuk integritas/rekonsiliasi/cadangan.
 * **Larangan lintas toko**: `GET /api/users/:id` dsb. tidak ada; semua lookup memakai `WHERE id = ? AND store_id = ?`
   → 404, bukan 403, supaya tidak membocorkan keberadaan id milik tenant lain.

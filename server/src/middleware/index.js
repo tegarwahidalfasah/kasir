@@ -6,6 +6,7 @@ import { firstRow, loadSetting } from '../db/index.js';
 import { permissionsFor, loadRoleMatrix } from '../rbac.js';
 import { DEFAULTS } from '../config.js';
 import { AppError } from '../lib/http.js';
+import { storeTimezone } from '../lib/tz.js';
 
 // Rute yang boleh diakses tanpa token (login, branding publik, health check).
 export const PUBLIC_PATHS = ['/auth/login', '/public/brand', '/health', '/openapi.json'];
@@ -30,6 +31,9 @@ export function authenticate(req, res, next) {
   req.user = user;
   req.storeId = user.store_id || firstRow(`SELECT id FROM stores WHERE is_active = 1 LIMIT 1`)?.id;
   req.branchId = user.branch_id;
+  // zona waktu toko untuk "hari bisnis" (laporan, nomor struk) — docs/11 §4
+  req.timezone = storeTimezone(req.storeId);
+  req.tz = storeTimezone(req.storeId);
   req.roleMatrix = loadRoleMatrix(loadSetting, req.storeId);
   req.permissions = permissionsFor(user.role, req.roleMatrix);
   next();

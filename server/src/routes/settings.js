@@ -12,6 +12,7 @@ import { authenticate, requirePerm } from '../middleware/index.js';
 import { DEFAULTS } from '../config.js';
 import { http, AppError } from '../lib/http.js';
 import { audit } from '../auth.js';
+import { forgetTimezone } from '../lib/tz.js';
 
 export const router = express.Router();
 const MOUNT = ''; // path sudah memuat prefiks; mount di index.js memakai '/api'
@@ -27,15 +28,24 @@ router.get(MOUNT + '/settings', auth(), http((req, res) => {
   res.json(out);
 }));
 
-router.put(MOUNT + '/settings/:key', auth('setting.store'), http((req, res) => {
+/**
+ * Permission per blok setting (docs/11 §7).
+ * Gerbang rute menerima SEMUA hak blok, lalu peta di bawah yang memutuskan blok mana
+ * yang boleh ditulis — sebelumnya rute digerbangi `setting.store` saja dan ada klausa
+ * `|| perms.includes('setting.store')` yang selalu benar, sehingga pemilik hak
+ * `setting.store` bisa menurunkan PPN (`setting.tax`) atau mengganti tema.
+ */
+const SETTING_BLOCKS = {
+  store: 'setting.store', tax: 'setting.tax', receipt: 'setting.receipt', theme: 'setting.theme', pos: 'setting.store',
+};
+const SETTING_PERMS = [...new Set(Object.values(SETTING_BLOCKS))];
+
+router.put(MOUNT + '/settings/:key', auth(SETTING_PERMS), http((req, res) => {
   const key = req.params.key;
   if (!DEFAULTS[key]) throw new AppError(400, `Blok setting tidak dikenal: ${key}`);
-  const permByBlock = {
-    store: 'setting.store', tax: 'setting.tax', receipt: 'setting.receipt', theme: 'setting.theme', pos: 'setting.store',
-  };
-  const need = permByBlock[key];
+  const need = SETTING_BLOCKS[key];
   const perms = req.permissions || [];
-  if (!perms.includes('*') && !perms.includes(need) && !perms.includes('setting.store')) {
+  if (!perms.includes('*') && !perms.includes(need)) {
     throw new AppError(403, `Butuh hak akses: ${need}`);
   }
   const before = loadSetting(req.storeId, key, DEFAULTS[key]);
@@ -52,6 +62,8 @@ router.put(MOUNT + '/settings/:key', auth('setting.store'), http((req, res) => {
       merged.name, merged.legal_name || null, merged.address || null, merged.phone || null, merged.email || null,
       merged.npwp || null, merged.timezone || 'Asia/Jakarta', merged.currency || 'IDR', merged.locale || 'id-ID',
       merged.logo_data_url ? 'data-url' : null, req.storeId);
+    // zona waktu bisa berubah -> cache harus dibuang supaya laporan & nomor struk ikut menyesuaikan
+    forgetTimezone(req.storeId);
   }
   audit({ userId: req.user.id, role: req.user.role, action: `setting.update.${key}`, entity: 'settings', entityId: key, storeId: req.storeId, ip: req.ip, before, after: merged });
   res.json({ ok: true, key, value: merged });

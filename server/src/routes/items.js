@@ -5,7 +5,7 @@
 import express from 'express';
 import { tx, allRows, firstRow, exec, uid, round2 } from '../db/index.js';
 import { authenticate, requirePerm } from '../middleware/index.js';
-import { recipesFor, planStockImpact } from '../bom.js';
+import { recipesFor, planStockImpact, rawCapacity } from '../bom.js';
 import { postMovement } from '../inventory.js';
 import { catalogFor } from '../sales.js';
 import { http, AppError } from '../lib/http.js';
@@ -15,6 +15,17 @@ export const router = express.Router();
 const MOUNT = ''; // path sudah memuat prefiks; mount di index.js memakai '/api'
 const auth = (...p) => [authenticate, ...p.map((x) => requirePerm(x))].flat();
 
+
+/** `yield_pct` = rendemen proses (output/input). Nilai > 100% atau <= 0 adalah salah input:
+ *  mesin stok meng-clamp-nya ke 1..100 (`bom.js`), jadi di sini pun dikunci agar angka di
+ *  master barang tidak menjanjikan sesuatu yang tidak dipakai (docs/11 §11). */
+const normYield = (v) => {
+  if (v === undefined || v === null || v === '') return 100;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) throw new AppError(400, 'yield_pct harus berupa angka 1–100');
+  if (n > 100) throw new AppError(400, `yield_pct maksimal 100 (rendemen tidak mungkin > 100%); diberi ${n}`);
+  return round2(n);
+};
 
 const ITEM_FIELDS = [
   'name', 'item_type', 'category_id', 'sku', 'barcode', 'unit', 'cost_price', 'selling_price',
@@ -70,7 +81,7 @@ router.post(MOUNT + '/items', auth('item.manage'), http((req, res) => {
     b.reorder_point != null ? Number(b.reorder_point) : null, Number(b.safety_stock) || 0,
     Number(b.lead_time_days) || 3, b.supplier_name || null,
     b.production_mode === 'make_to_order' ? 'make_to_order' : 'make_to_stock',
-    Number(b.yield_pct) || 100, bool(b.is_non_stock), b.is_active === 0 ? 0 : 1, b.image || null, b.notes || null
+    normYield(b.yield_pct), bool(b.is_non_stock), b.is_active === 0 ? 0 : 1, b.image || null, b.notes || null
   ); // <- urutan argumen sama persis dengan urutan kolom
   // stok awal barang/bahan langsung lewat ledger (bukan UPDATE mentah)
   const start = Number(req.body?.opening_stock) || 0;
@@ -93,7 +104,7 @@ router.put(MOUNT + '/items/:id', auth('item.manage'), http((req, res) => {
   for (const f of ITEM_FIELDS) {
     if (b[f] === undefined) continue;
     sets.push(`${f} = ?`);
-    params.push(typeof b[f] === 'number' ? round2(b[f]) : b[f]);
+    params.push(f === 'yield_pct' ? normYield(b[f]) : (typeof b[f] === 'number' ? round2(b[f]) : b[f]));
   }
   if (!sets.length) return res.json(item);
   sets.push(`updated_at = datetime('now')`);
@@ -208,16 +219,15 @@ function syncCost(itemId) {
   if (cost > 0) exec(`UPDATE items SET cost_price = ? WHERE id = ?`, cost, itemId);
 }
 
+/**
+ * Kapasitas porsi. Dulu rumusnya ditulis ulang di sini TANPA membagi `yield_pct`,
+ * sehingga lebih optimis daripada mesin stok & `/pos/catalog.capacity` (docs/11 §11).
+ * Sekarang memakai `rawCapacity()` dari `bom.js` — satu rumus, satu jawaban.
+ */
 function maxServable(itemId, catalog, recipes) {
   const rows = recipes[itemId] || [];
-  if (!rows.length) return catalog[itemId]?.stock_qty ?? null;
-  let cap = Infinity;
-  for (const r of rows) {
-    const per = (Number(r.qty) || 0) * (1 + (Number(r.waste_pct) || 0) / 100);
-    if (!per) continue;
-    cap = Math.min(cap, Math.floor((Number(r.raw_stock) || 0) / per + 1e-9));
-  }
-  return Number.isFinite(cap) ? cap : 0;
+  if (!rows.length) return catalog[itemId]?.stock_qty ?? null; // tanpa resep: ketersediaan = stok rak
+  return rawCapacity(itemId, catalog, recipes);
 }
 
 function pick(body) {
