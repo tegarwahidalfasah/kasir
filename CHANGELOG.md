@@ -21,7 +21,18 @@ Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/), nomor versi
 - **`.nvmrc`** (`22`) dan **`.editorconfig`** (UTF-8, LF, 2 spasi, baris maksimum 140) sebagai
   kesepakatan versi & format dasar antar editor.
 
-### Diperbaiki (dokumen menyimpang dari kode)
+### Diperbaiki
+
+- **Tombol "Masuk" di layar login tidak berfungsi** (ditemukan saat penelusuran kode). Komponen
+  `Button` mengunci `type="button"`, sehingga `<button>` di dalam `<form onSubmit={submit}>` tidak
+  pernah men-submit apa pun: mengklik "Masuk" tidak melakukan apa-apa — tanpa request dan tanpa pesan
+  error — dan hanya tombol Enter yang bisa masuk. Ini bug di layar pertama aplikasi yang dilihat kasir.
+  Perbaikan: `Button` menerima prop `type` (default `'button'`, pemakai lain tidak berubah) dan tombol
+  "Masuk" memakai `type="submit"`. Ditambah tes regresi di smoke UI (isi username/kata sandi → klik
+  "Masuk" → pastikan shell muncul) yang sudah diverifikasi **gagal tanpa perbaikan** (2 assertion merah)
+  dan lulus setelahnya.
+
+### Diperbaiki (dokumentasi)
 
 - README & `docs/01`: **Express 4 → Express 5** (yang terpasang 5.2.1; komentar di `server/src/index.js`
   sejak awal sudah menulis Express 5).
