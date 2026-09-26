@@ -14,13 +14,43 @@ export default function PosPage() {
   // katalog lengkap (termasuk bahan baku + kapasitas) diambil dari /pos/catalog:
   // bootstrap hanya berisi barang jadi, sedangkan proyeksi stok butuh angka bahan.
   const [live, setLive] = useState(null);
-  useEffect(() => {
-    let alive = true;
-    const pull = () => get('/pos/catalog').then((c) => { if (alive) setLive(c); }).catch(() => {});
-    pull();
-    const id = setInterval(pull, 60000);
-    return () => { alive = false; clearInterval(id); };
+  // Katalog lengkap (termasuk bahan baku + kapasitas) diambil dari /pos/catalog.
+  // Sejak docs/11 §15 penarikan dipicu oleh EVENT stok dari SSE (`app.stockRev`),
+  // bukan interval tetap 60 detik — dengan throttle agar sepuluh penjualan
+  // beruntun hanya menghasilkan satu penarikan. Bila SSE tidak tersedia,
+  // interval cadangan yang lebih lambat tetap menjaga angka tidak basi.
+  const pullState = useRef({ busy: false, queued: false, last: 0, alive: true });
+  const pull = useCallback(async () => {
+    const st = pullState.current;
+    if (st.busy) { st.queued = true; return; }
+    const wait = Math.max(0, 2500 - (Date.now() - st.last));
+    if (wait > 0) {
+      st.queued = true;
+      setTimeout(() => { if (st.queued) { st.queued = false; pull(); } }, wait);
+      return;
+    }
+    st.busy = true;
+    st.last = Date.now();
+    try {
+      const c = await get('/pos/catalog');
+      if (st.alive) setLive(c);
+    } catch { /* biarkan angka lama; penarikan berikutnya akan menyusul */ } finally {
+      st.busy = false;
+      if (st.queued) { st.queued = false; pull(); }
+    }
   }, []);
+  useEffect(() => {
+    pullState.current.alive = true;
+    pull();
+    return () => { pullState.current.alive = false; };
+  }, [pull]);
+  // stok berubah (event SSE) -> tarik ulang, di-throttle di dalam pull()
+  useEffect(() => { if (app.stockRev) pull(); }, [app.stockRev, pull]);
+  // cadangan: SSE bisa gagal di jaringan/proxy yang menutup koneksi stream
+  useEffect(() => {
+    const id = setInterval(pull, app.live ? 300000 : 60000);
+    return () => clearInterval(id);
+  }, [app.live, pull]);
   const catalogAll = useMemo(() => (live?.items ? live.items : app.catalog), [live, app.catalog]);
   const catalog = catalogAll.filter((i) => i.item_type === 'finished');
   const categories = app.categories;

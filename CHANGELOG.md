@@ -17,6 +17,7 @@ Belum dirilis. Bagian ini menggabungkan tiga rangkaian pekerjaan:
    dan `forceConsumeRaw` yang akhirnya dihormati mesin BOM (#3).
 5. **Sisa Sprint 1/2 `docs/11`**: zona waktu toko (#4), permission per blok setting (#7), CSV formula injection (#8),
    dan satu rumus kapasitas yang menghormati `yield_pct` (#11).
+6. **Penutup Sprint 2 `docs/11`**: produksi aman-jujur (#10), katalog realtime (#15), dan sinkronisasi dokumen (#14).
 
 ### Ditambahkan
 
@@ -24,6 +25,17 @@ Belum dirilis. Bagian ini menggabungkan tiga rangkaian pekerjaan:
   (offset & hari bisnis, fallback zona ngawur, `addDays`, cache zona toko, nomor struk per zona) dan 4 tes API
   (zona waktu laporan + nomor struk + filter tanggal; permission per blok setting; netralisasi CSV; satu rumus kapasitas).
   Keempatnya dijalankan terhadap kode lama → **4 failing**, membuktikan tesnya menangkap bug.
+- **Katalog realtime (#15)** — `server/src/catalog.js` (`catalogVersion()` = sha1 12 karakter dari hitungan
+  item/resep/addon/pajak/diskon/metode/kategori; **angka stok sengaja dikecualikan** karena stok berubah terus),
+  `GET /api/bootstrap/lite` (≥5× lebih kecil dari `/bootstrap` penuh), dan `GET /api/events` (Server-Sent Events:
+  `hello` + `catalog_version` saat tersambung, event `stock` tiap `postMovement`, heartbeat 25 s, `retry: 5000`).
+- **Bus event in-process** `server/src/events.js` — `subscribe`/`publish` + `beginBatch`/`commitBatch`/`abortBatch`,
+  sehingga event hanya keluar **setelah transaksi COMMIT**; `postMovement` menjadi satu-satunya pemancar sinyal stok.
+- **`server/tests/runtime.test.js` (6 tes)** — menguji perilaku boot server sebagai *proses/siklus hidup*
+  (pagar produksi), bukan sekadar fungsi: ini lapisan yang selama ini tidak punya tes.
+- **2 tes API #15** — `bootstrap/lite` jauh lebih kecil & versi katalog stabil saat opname stok namun berubah
+  saat katalog berubah; klien SSE menerima `hello` + `stock` tanpa polling, sedangkan `POST /stock/produce`
+  yang gagal 409 tidak memancarkan event (bukti batching commit).
 - **6 tes regresi snapshot BOM & `forceConsumeRaw`** (61 → **67 tes**): 4 di `server/tests/stock.test.js`
   (mesin BOM memotong bahan walau stok jadi ada; retur memakai snapshot walau resep diubah; retur produk
   `make_to_order` mengembalikan bahan; data lama tanpa snapshot tetap bisa diretur) dan 2 di
@@ -197,6 +209,24 @@ Belum dirilis. Bagian ini menggabungkan tiga rangkaian pekerjaan:
 
 ### Diubah
 
+- **Klien: polling berat 45 detik per tab dihapus (#15).** `client/src/store.jsx` kini memakai
+  `GET /api/bootstrap/lite` (45 s) dan hanya memuat `/bootstrap` penuh bila `catalog_version` berubah;
+  `client/src/features/pos/PosPage.jsx` menarik stok karena **event** (`app.stockRev`, throttle 2,5 s) dengan
+  interval cadangan 60 s/300 s, sehingga satu tab POS tidak lagi membanjiri API.
+- **SSE memakai `fetch` + `getReader()`, bukan `EventSource`** — `EventSource` tidak dapat mengirim header,
+  dan token di query string akan bocor ke log/URL; di klien, stream dibuka ulang dengan backoff 2 s → 30 s.
+- **Produksi aman-jujur (#10).** `NODE_ENV=production` tanpa `KASIR_JWT_SECRET` → server **gagal start**
+  (`assertJwtSecret()` dipanggil dari `createApp()`/`api/index.js`, **bukan** saat modul `auth.js` dimuat,
+  agar `npm run seed` di produksi tetap berjalan); auto-seed demo hanya dengan `KASIR_AUTOSEED=1` dan
+  ditolak di produksi; seed manual di produksi butuh `KASIR_ALLOW_SEED=1`. README/`docs/09` §10 menyatakan
+  Vercel = **demo/pratinjau UI** (`/tmp` ephemeral & per-instance) beserta env yang wajib diisi.
+- **Sinkronisasi dokumen (#14).** Jumlah indeks "16" → **19** (16 `CREATE INDEX` + 3 `CREATE UNIQUE INDEX`,
+  dicocokkan dengan `sqlite_master` DB hasil seed), klaim lama `Express 4`/`cors`/`multer` dibersihkan,
+  `DATA_DIR` default `server/src/data`, komentar deduplikasi alert 24 → **6 jam** (sesuai kode), dan
+  `docs/08` §7 baru mencatat angka tes yang berlaku (85 / 32 langkah / 20 QA) agar klaim `57/57` & `28/28`
+  di §3 terbaca sebagai catatan historis.
+- **`server/src/db/index.js`** — `tx()` mengumpulkan event di dalam batch dan baru mem-`publish` setelah commit
+  (abort = tidak ada event).
 - `docs/09` §10 dan README: **Vercel ditandai sebagai jalur demo/pratinjau**, produksi = VPS/systemd
   (SQLite di `/tmp` sementara & per-instance, rahasia JWT hilang tiap cold start, auto-seed menaruh
   kredensial demo publik). Perubahan kode untuk menutup auto-seed dijadwalkan di Sprint 2. (docs/11 §10)
@@ -223,13 +253,13 @@ Rilis internal: Fase 1–3 terimplementasi sebagai kode berjalan, Fase 4 berupa 
 ### Ditambahkan
 
 **Fase 1 — fondasi**
-- Skema SQLite relasional (`server/src/db/schema.sql`): 21 tabel + view `v_stock_health` + 16 indeks;
+- Skema SQLite relasional (`server/src/db/schema.sql`): 21 tabel + view `v_stock_health` + 19 indeks (16 biasa + 3 unik; entri ini awalnya salah menulis 16);
   pemisahan `items.item_type` (`raw` vs `finished`) + `item_recipes` (BOM banyak-ke-banyak, `waste_pct`, `is_optional`)
   + `item_addons` (topping berbayar yang ikut memotong bahan) + ledger `stock_movements` (`balance_after`, `ref_type/ref_id`, `voided`).
 - Desain UI modular berbasis token: `settings.theme` (10 token warna, mode terang/gelap, radius, kerapatan, font, lebar sidebar,
   pola latar, nama aplikasi, logo) + `theme.menu` (urutan, label, ikon, visibilitas, permission per menu) — diubah dari
   layar Pengaturan tanpa rebuild/restart.
-- Stack & infrastruktur: Node.js 22 + Express 4 + `node:sqlite` (tanpa dependensi native), React 18 + Vite,
+- Stack & infrastruktur: Node.js 22 + Express 5 + `node:sqlite` (tanpa dependensi native), React 18 + Vite,
   SPA dilayani satu proses; `client/vite.config.js` mem-proxy `/api` ke port `PORT`.
 
 **Fase 2 — MVP kasir**

@@ -26,7 +26,11 @@ export function AppProvider({ children }) {
   const [status, setStatus] = useState(getToken() ? 'loading' : 'anon');
   const [toasts, setToasts] = useState([]);
   const [confirmReq, setConfirmReq] = useState(null);
+  const [stockRev, setStockRev] = useState(0);     // penghitung gerakan stok dari SSE
+  const [live, setLive] = useState(false);         // SSE tersambung?
   const seq = useRef(0);
+  const bootRef = useRef(null);                    // boot terbaru tanpa memicu render
+  useEffect(() => { bootRef.current = boot; }, [boot]);
 
   const toast = useCallback((message, kind = 'info', ms = 4200) => {
     const id = ++seq.current;
@@ -73,12 +77,94 @@ export function AppProvider({ children }) {
     loadBootstrap().then(() => setStatus('ready')).catch(() => { setToken(''); setStatus('anon'); });
   }, [loadBootstrap]);
 
-  // refresh otomatis: stok real-time & penghitung peringatan
+  // Refresh ringan tiap 45 detik (docs/11 §15): hanya identitas, permission, menu,
+  // jumlah peringatan, dan `catalog_version`. Katalog+BOM penuh (respons berat)
+  // diambil ulang HANYA saat versinya berubah — bukan tiap kali poling.
+  const pollLite = useCallback(async () => {
+    const cur = bootRef.current;
+    if (!cur) return;
+    const lite = await get('/bootstrap/lite');
+    if (lite.catalog_version !== cur.catalog_version) {
+      await loadBootstrap();                       // struktur katalog berubah
+      return;
+    }
+    setBoot({
+      ...cur,
+      user: lite.user, permissions: lite.permissions, store: lite.store,
+      settings: { ...cur.settings, theme: lite.settings?.theme ?? cur.settings?.theme },
+      alerts_unread: lite.alerts_unread, catalog_version: lite.catalog_version,
+      server_time: lite.server_time,
+    });
+  }, [loadBootstrap]);
+
   useEffect(() => {
     if (status !== 'ready') return undefined;
-    const id = setInterval(() => { loadBootstrap().catch(() => {}); }, 45000);
+    const id = setInterval(() => { pollLite().catch(() => {}); }, 45000);
     return () => clearInterval(id);
-  }, [status, loadBootstrap]);
+  }, [status, pollLite]);
+
+  // Stok real-time lewat SSE (`/api/events`) — satu koneksi, bukan poling.
+  // Klien memakai fetch + stream (bukan EventSource) supaya token tetap di header
+  // Authorization dan tidak pernah muncul di URL. Bila gagal, `live` tetap false
+  // dan halaman POS memakai poling cadangan yang lebih lambat.
+  useEffect(() => {
+    if (status !== 'ready') { setLive(false); return undefined; }
+    const ctl = new AbortController();
+    let stopped = false;
+
+    const handle = (raw) => {
+      const line = raw.split('\n').find((l) => l.startsWith('data:'));
+      if (!line) return;
+      let ev = null;
+      try { ev = JSON.parse(line.slice(5).trim()); } catch { return; }
+      if (ev?.type !== 'stock') return;
+      // tempelkan saldo baru ke katalog yang sudah ada (dipakai badge stok & kapasitas lokal)
+      setBoot((prev) => {
+        if (!prev?.catalog || !ev.item_id) return prev;
+        let changed = false;
+        const catalog = prev.catalog.map((it) => {
+          if (it.id !== ev.item_id || it.stock_qty === ev.balance_after) return it;
+          changed = true;
+          return { ...it, stock_qty: ev.balance_after };
+        });
+        return changed ? { ...prev, catalog } : prev;
+      });
+      setStockRev((n) => n + 1);                   // memicu halaman POS menarik katalog
+    };
+
+    const run = async () => {
+      let backoff = 2000;
+      while (!stopped) {
+        try {
+          const res = await fetch('/api/events', {
+            headers: { authorization: `Bearer ${getToken()}` },
+            signal: ctl.signal,
+          });
+          if (!res.ok || !res.body) throw new Error(`stream ${res.status}`);
+          setLive(true);
+          backoff = 2000;
+          const reader = res.body.getReader();
+          const dec = new TextDecoder();
+          let buf = '';
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += dec.decode(value, { stream: true });
+            const chunks = buf.split('\n\n');
+            buf = chunks.pop();
+            for (const c of chunks) handle(c);
+          }
+        } catch {
+          if (stopped || ctl.signal.aborted) return;
+        }
+        setLive(false);
+        await new Promise((r) => setTimeout(r, backoff));
+        backoff = Math.min(backoff * 2, 30000);    // jangan menghajar server yang sedang mati
+      }
+    };
+    run();
+    return () => { stopped = true; ctl.abort(); setLive(false); };
+  }, [status]);
 
   const value = useMemo(() => ({
     status, session, boot, setBoot, login, logout, refresh, toast, confirm,
@@ -94,7 +180,10 @@ export function AppProvider({ children }) {
     taxes: boot?.taxes || [],
     discountRules: boot?.discount_rules || [],
     alertsUnread: boot?.alerts_unread || 0,
-  }), [status, session, boot, login, logout, refresh, toast, confirm]);
+    catalogVersion: boot?.catalog_version || null,
+    stockRev,
+    live,
+  }), [status, session, boot, login, logout, refresh, toast, confirm, stockRev, live]);
 
   return (
     <AppCtx.Provider value={value}>

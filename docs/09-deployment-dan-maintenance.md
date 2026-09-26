@@ -83,13 +83,15 @@ Bila `ops/kasir.service` tidak dipakai, jalankan minimal dengan:
 | `PORT` | `4000` | API + SPA |
 | `KASIR_DATA_DIR` | `server/src/data` | **produksi: `/var/lib/kasir`** |
 | `KASIR_DB_PATH` | `<KASIR_DATA_DIR>/kasir.db` | menimpa jalur DB sepenuhnya |
-| `KASIR_JWT_SECRET` | dibuat otomatis (berkas `.jwt-secret`, mode 0600) | **produksi: wajib diisi** |
+| `KASIR_JWT_SECRET` | dibuat otomatis (berkas `.jwt-secret`, mode 0600) | **produksi: wajib diisi** — bila `NODE_ENV=production` dan kosong, server gagal start (`openssl rand -hex 32`) |
 | `KASIR_TOKEN_TTL` | `43200` (12 jam) | umur sesi; layar kasir memanggil `POST /api/auth/refresh` |
 | `KASIR_BACKUP_DIR` | `<KASIR_DATA_DIR>/backups` | tujuan cadangan `npm run backup` |
 | `KASIR_TRUST_PROXY` | `loopback` (`true` bila `VERCEL` terdeteksi) | seberapa jauh `X-Forwarded-For` dipercaya: `false`/`0`, `1` (satu proxy), `2`, `loopback`, `uniquelocal`, atau CIDR (`10.0.0.0/8`). **Wajib disetel benar** — nilai longgar membuat pembatas login per-IP bisa dilewati dengan header palsu. Di belakang Caddy/nginx satu mesin (contoh `ops/`) biarkan default; bila proxy berada di mesin lain, set `1` |
 | `KASIR_LOGIN_LIMIT_IP` | `5` | percobaan login gagal per IP / 60 detik sebelum 429 |
 | `KASIR_LOGIN_LIMIT_USER` | `8` | percobaan login gagal per username / 60 detik (tidak bisa diakali dengan mengganti IP) |
-| `NODE_ENV` | — | `production` → pesan 5xx tidak dikirim ke klien |
+| `NODE_ENV` | — | `production` → pesan 5xx tidak dikirim ke klien, `KASIR_JWT_SECRET` menjadi wajib, auto-seed ditolak |
+| `KASIR_AUTOSEED` | *(mati)* | `1` → isi data demo (`budi`/`rahasia123`, PIN 1111) saat tabel `stores` kosong. Diabaikan bila `NODE_ENV=production` |
+| `KASIR_ALLOW_SEED` | *(mati)* | `1` → izinkan `npm run seed` **menimpa** data di `NODE_ENV=production` (mis. demo/pelatihan yang disengaja) |
 
 ## 5. Jadwal pemeliharaan yang disarankan
 
@@ -185,20 +187,24 @@ Alasan teknis (rinci di `docs/11-analisis-2026-09-17.md` §10):
   data yang berarti di model ini.
 - **Rahasia JWT ikut hilang** (`/tmp/.jwt-secret`) → semua sesi gugur tiap cold start; kasir
   terlempar ke layar login tanpa sebab yang terlihat.
-- **Auto-seed mengisi kredensial demo publik.** `api/index.js` menjalankan `runSeed()` bila tabel
-  `stores` kosong, sehingga deployment publik memiliki user `budi` dengan kata sandi `rahasia123`
-  yang tercantum di README. Siapa pun yang menemukan URL-nya menjadi pemilik toko.
+- **Auto-seed di balik flag (sejak 26 Sep 2026).** `api/index.js` hanya menjalankan `runSeed()` bila
+  `KASIR_AUTOSEED=1` **dan** `NODE_ENV !== 'production'`; `runSeed()` sendiri menolak jalan di produksi
+  kecuali disengaja (`KASIR_ALLOW_SEED=1`). Sebelumnya DB kosong otomatis terisi user demo `budi`
+  dengan kata sandi `rahasia123` yang tercantum di README — siapa pun yang menemukan URL-nya menjadi
+  pemilik toko.
+- **`KASIR_JWT_SECRET` wajib di produksi (sejak 26 Sep 2026).** Tanpa rahasia eksplisit, server
+  **gagal start** dengan instruksi pembuatan rahasia (bukan lagi membuat berkas `/tmp/.jwt-secret`
+  yang hilang tiap cold start).
 
-Bila suatu saat serverless tetap diinginkan, syaratnya: DB eksternal (Turso/libSQL atau Postgres)
-di balik lapisan `server/src/db/index.js`, `KASIR_JWT_SECRET` wajib di lingkungan produksi
-(gagal start bila kosong), dan auto-seed ditutup di balik flag eksplisit (`KASIR_AUTOSEED=1`).
+Sisa syarat bila suatu saat serverless tetap diinginkan: DB eksternal (Turso/libSQL atau Postgres)
+di balik lapisan `server/src/db/index.js`.
 
 - **Arsitektur Vercel (apa adanya)**:
   - Frontend SPA (Vite + React) dibuild otomatis via `npm run build` dan disajikan lewat edge CDN Vercel (`client/dist`).
   - Backend API Express disajikan sebagai Vercel Serverless Function melalui `api/index.js` dengan rewrites di `vercel.json`.
-  - Database SQLite menggunakan direktori `/tmp` (`KASIR_DATA_DIR=/tmp`) dan otomatis melakukan auto-seed data demo saat inisialisasi awal.
+  - Database SQLite menggunakan direktori `/tmp` (`KASIR_DATA_DIR=/tmp`); auto-seed data demo **mati secara default** (butuh `KASIR_AUTOSEED=1`, dan tidak pernah aktif saat `NODE_ENV=production`).
 - **Langkah Deploy (demo)**:
   1. Hubungkan repositori Git ke Vercel via Dashboard Vercel atau jalankan `npx vercel`.
   2. Vercel mendeteksi file `vercel.json` secara otomatis.
-  3. Konfigurasi selesai dan URL pratinjau langsung aktif — beri label "demo" dan ganti kata sandi akun demo bila URL dibagikan.
+  3. Set `KASIR_JWT_SECRET` (dan `KASIR_AUTOSEED=1` bila ingin data demo) di Environment Variables; URL pratinjau langsung aktif — beri label "demo" dan ganti kata sandi akun demo bila URL dibagikan.
 

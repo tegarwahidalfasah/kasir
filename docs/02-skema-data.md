@@ -1,6 +1,6 @@
 # 02 — Skema data relasional (Fase 1)
 
-Berkas: `server/src/db/schema.sql` — **21 tabel, 1 view, 16 indeks**, dijalankan setiap startup dengan
+Berkas: `server/src/db/schema.sql` — **21 tabel, 1 view, 19 indeks** (16 biasa + 3 unik), dijalankan setiap startup dengan
 `CREATE … IF NOT EXISTS` sehingga instalasi baru & lama identik. Seluruh ID berupa teks berprefiks
 (`itm…`, `rcp…`, `mov…`, `txs…`, `alr…`) yang dibangkitkan aplikasi lewat `uid(prefix)` (`server/src/db/index.js`)
 supaya tidak bergantung pada sintaks auto-increment DB tertentu. Uang di tabel transaksi berupa angka

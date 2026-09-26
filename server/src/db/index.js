@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import { beginBatch, commitBatch, abortBatch } from '../events.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const DATA_DIR = process.env.KASIR_DATA_DIR || (process.env.VERCEL ? '/tmp' : path.join(__dirname, '..', 'data'));
@@ -79,12 +80,17 @@ export const DB_FILE = DB_PATH;
 /** Jalankan `fn()` di dalam transaksi SQLite (atomic + rollback saat error). */
 export function tx(fn) {
   db.exec('BEGIN IMMEDIATE');
+  // Event SSE (perubahan stok) ditahan selama transaksi: kalau ROLLBACK, klien
+  // tidak boleh pernah melihat angka yang tidak jadi tersimpan (docs/11 §15).
+  beginBatch();
   try {
     const out = fn(db);
     db.exec('COMMIT');
+    commitBatch();
     return out;
   } catch (err) {
     try { db.exec('ROLLBACK'); } catch { /* ignore */ }
+    abortBatch();
     throw err;
   }
 }

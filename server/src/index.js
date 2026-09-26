@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { api } from './routes/index.js';
+import { assertJwtSecret } from './auth.js';
 import { DB_FILE, firstRow } from './db/index.js';
 import { AppError } from './lib/http.js';
 
@@ -38,6 +39,9 @@ export function trustProxySetting(raw = process.env.KASIR_TRUST_PROXY) {
 }
 
 export function createApp() {
+  // produksi tanpa KASIR_JWT_SECRET -> gagal di sini, bukan diam-diam memakai
+  // rahasia acak yang membuat semua sesi gugur tiap restart (docs/11 §10)
+  assertJwtSecret();
   const app = express();
   // `trust proxy: true` mempercayai X-Forwarded-For kiriman KLIEN sehingga pembatas
   // login per-IP bisa dilewati dengan header palsu (docs/11 §6). Default: hanya hop

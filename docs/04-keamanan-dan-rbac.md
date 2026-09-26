@@ -27,7 +27,8 @@ Ancaman yang dijaga di v0.1.0:
 * **Token**: JWT HS256 dibentuk manual (`header.payload.signature`, base64url). Payload `{ uid, role, sid, iat, exp }`.
   Verifikasi: panjang & `timingSafeEqual` pada signature, lalu `exp`. Tidak ada sesi di DB → token tidak dapat dicabut satu per satu;
   untuk memutus akses orang, **nonaktifkan user** (`users.is_active = 0`) karena `authenticate` membaca ulang baris user setiap permintaan.
-* **Rahasia**: `KASIR_JWT_SECRET`; bila kosong, dibuat acak 32 byte dan disimpan di `server/src/data/.jwt-secret` (mode `0600`).
+* **Rahasia**: `KASIR_JWT_SECRET`; bila kosong, dibuat acak 32 byte dan disimpan di `server/src/data/.jwt-secret` (mode `0600`). **Pengecualian produksi (sejak 26 Sep 2026):** bila `NODE_ENV=production` dan `KASIR_JWT_SECRET` kosong, server **menolak start** (`KASIR_JWT_SECRET wajib diisi saat NODE_ENV=production … openssl rand -hex 32`) — berkas `.jwt-secret` tidak ditulis dan tidak ada port yang dibuka. Pagar ini dipanggil dari `createApp()`/`api/index.js` (saat server start), bukan saat modul `auth.js` dimuat, supaya perintah seperti `npm run seed` tetap bisa dijalankan.
+* **Auto-seed data demo mati secara default.** `api/index.js` hanya memanggil `runSeed()` bila `KASIR_AUTOSEED=1` **dan** bukan produksi; `scripts/seed.js` menolak di produksi kecuali disengaja dengan `KASIR_ALLOW_SEED=1`.
   Berkas ini tidak masuk git dan tidak boleh hilang (bila hilang, semua sesi login kembali).
 * **Token hanya lewat header** `Authorization: Bearer …`. Fallback `?token=` di query string sudah dihapus
   (token di URL tertinggal di log proxy & riwayat peramban).

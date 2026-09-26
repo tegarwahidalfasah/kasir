@@ -15,8 +15,23 @@ import { ROLE_PRESETS } from '../src/rbac.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export function runSeed({ force = false, quiet = false } = {}) {
+export function runSeed({ force = false, quiet = false, auto = false } = {}) {
   const log = quiet ? () => {} : (...a) => console.log(...a);
+
+  // Data demo berisi kredensial yang dipublikasikan di README (budi/rahasia123, PIN 1111).
+  // Karena itu seed OTOMATIS dilarang di produksi; seed manual pun harus disengaja
+  // (docs/11 §10): `KASIR_ALLOW_SEED=1 npm run seed`.
+  const prod = process.env.NODE_ENV === 'production';
+  if (prod && auto) {
+    log('⛔ Auto-seed dilewati: NODE_ENV=production (data demo berisi kredensial publik).');
+    return { ok: false, skipped: true, reason: 'production' };
+  }
+  if (prod && process.env.KASIR_ALLOW_SEED !== '1') {
+    throw new Error(
+      'Menolak mengisi data demo di NODE_ENV=production.\n' +
+      '  Bila ini memang disengaja (mis. demo/pelatihan), jalankan: KASIR_ALLOW_SEED=1 npm run seed'
+    );
+  }
   const existing = firstRow(`SELECT COUNT(*) AS n FROM stores`)?.n || 0;
   if (existing > 0 && !force) {
     log('ℹ️  Database sudah berisi data. Pakai `npm run reset` untuk mengulang dari nol, atau `node server/scripts/seed.js --force` untuk menambah.');

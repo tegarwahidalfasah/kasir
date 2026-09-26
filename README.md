@@ -97,11 +97,13 @@ npm run maintenance -- restore <berkas> --yes
 **Produksi = VPS / systemd** (dokumen lengkap: [`docs/09-deployment-dan-maintenance.md`](docs/09-deployment-dan-maintenance.md),
 berkas siap pakai di [`ops/`](ops/): unit systemd yang di-harden, contoh Caddy/nginx, crontab cadangan).
 
-> ⚠️ **Vercel di bawah ini hanya untuk demo/pratinjau UI, bukan untuk mencatat penjualan sungguhan.**
+> ⚠️ **Vercel hanya untuk demo/pratinjau UI, bukan untuk mencatat penjualan sungguhan.**
 > Di lingkungan serverless, SQLite berada di `/tmp` yang **sementara dan per-instance** (transaksi hilang
-> saat container recycle), rahasia JWT ikut hilang (semua sesi gugur tiap cold start), dan API otomatis
-> men-seed **akun demo `budi`/`rahasia123`** yang tercantum di README ini. Rinciannya:
-> [`docs/09` §10](docs/09-deployment-dan-maintenance.md) dan [`docs/11` §10](docs/11-analisis-2026-09-17.md).
+> saat container recycle). Sejak 26 Sep 2026 API juga **menolak start tanpa `KASIR_JWT_SECRET`** di
+> `NODE_ENV=production`, dan **auto-seed data demo dimatikan** kecuali diminta eksplisit dengan
+> `KASIR_AUTOSEED=1` (tetap tidak berlaku bila `NODE_ENV=production`). Rincian & cara mengaktifkan
+> kembali untuk demo privat: [`docs/09` §10](docs/09-deployment-dan-maintenance.md) dan
+> [`docs/11` §10](docs/11-analisis-2026-09-17.md).
 
 Repositori ini telah dikonfigurasi untuk deploy langsung ke **Vercel** (Vite SPA + Express Serverless API):
 
@@ -116,6 +118,9 @@ Repositori ini telah dikonfigurasi untuk deploy langsung ke **Vercel** (Vite SPA
    - Buka [vercel.com](https://vercel.com) dan pilih **Add New... → Project**.
    - Impor repositori ini.
    - Konfigurasi otomatis terbaca dari `vercel.json` (`npm run build` → `client/dist` dan API di `/api/index.js`).
+   - Isi **Environment Variables**: `KASIR_JWT_SECRET` (`openssl rand -hex 32`) — tanpa ini fungsi API
+     mengembalikan error start di produksi. Tambahkan `KASIR_AUTOSEED=1` **hanya** bila Anda memang ingin
+     data demo (akun `budi`/`rahasia123`) terisi otomatis — jangan dipakai dengan `NODE_ENV=production`.
    - Klik **Deploy**.
 
 3. **Deploy via Vercel CLI (Alternatif)**:
@@ -132,7 +137,7 @@ Repositori ini telah dikonfigurasi untuk deploy langsung ke **Vercel** (Vite SPA
 kasir/
 ├─ server/                        API Node + logika domain
 │  ├─ src/index.js                Express: header keamanan, /api, SPA (client/dist), /api/health, error handler
-│  ├─ src/db/schema.sql           21 tabel + view v_stock_health + 16 indeks (idempoten)
+│  ├─ src/db/schema.sql           21 tabel + view v_stock_health + 19 indeks (16 biasa + 3 unik, idempoten)
 │  ├─ src/db/index.js             koneksi node:sqlite (WAL), tx(), allRows/firstRow, saveSetting/loadSetting
 │  ├─ src/auth.js                 scrypt + PIN, token HMAC (JWT-like), pembatas login, audit()
 │  ├─ src/rbac.js                 20 permission & preset 5 role (matriks dapat disunting per toko)

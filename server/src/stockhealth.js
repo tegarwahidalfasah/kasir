@@ -129,7 +129,7 @@ export function stockHealth({ storeId, days = 14, lookaheadDays = 7, timezone } 
   });
 }
 
-/** Bangkitkan alert stok rendah; deduplikasi 24 jam per item agar tidak spam dasbor. */
+/** Bangkitkan alert stok rendah; deduplikasi 6 jam per item agar tidak spam dasbor. */
 export function generateAlerts(storeId, opts = {}) {
   const health = stockHealth({ storeId, days: opts.days || 14, lookaheadDays: opts.lookaheadDays || 7 });
   const risky = health.filter((h) => h.status === 'warning' || h.status === 'critical' || h.status === 'out');

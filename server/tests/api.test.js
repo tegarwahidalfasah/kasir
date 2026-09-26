@@ -669,6 +669,93 @@ describe('penguatan (docs/11)', () => {
     assert.equal((await must(`/items/${fin.id}`)).yield_pct, 50, 'nilai lama tidak berubah setelah penolakan');
   });
 
+  it('bootstrap/lite: muatan kecil + catalog_version berubah hanya saat struktur berubah (docs/11 §15)', async () => {
+    const full = await must('/bootstrap');
+    assert.ok(full.catalog.length >= 15 && full.bom, 'bootstrap penuh memuat katalog + BOM');
+    assert.ok(full.catalog_version, 'bootstrap penuh menyertakan catalog_version');
+
+    const lite = await must('/bootstrap/lite');
+    for (const key of ['user', 'permissions', 'store', 'settings', 'alerts_unread', 'catalog_version']) {
+      assert.ok(key in lite, `lite memuat ${key}`);
+    }
+    assert.equal(lite.catalog, undefined, 'katalog TIDAK ikut di lite');
+    assert.equal(lite.bom, undefined, 'BOM tidak ikut di lite');
+    assert.equal(lite.catalog_version, full.catalog_version, 'versi sama dengan bootstrap penuh');
+    assert.ok(JSON.stringify(lite).length * 5 < JSON.stringify(full).length,
+      `lite jauh lebih kecil (${JSON.stringify(lite).length} vs ${JSON.stringify(full).length} byte)`);
+
+    // stok berubah TIDAK mengubah versi (delta stok dikirim lewat SSE, bukan dengan menarik katalog)
+    const raw = await must('/items', { method: 'POST', body: { name: 'Bahan Versi API', item_type: 'raw', unit: 'gr', cost_price: 100, opening_stock: 500 } });
+    const v1 = (await must('/bootstrap/lite')).catalog_version;
+    assert.notEqual(v1, lite.catalog_version, 'barang baru -> versi berubah');
+    await must('/stock/adjust', { method: 'POST', body: { item_id: raw.id, counted_qty: 495, reason: 'uji versi' } });
+    assert.equal((await must('/bootstrap/lite')).catalog_version, v1, 'opname stok -> versi TIDAK berubah');
+
+    await must(`/items/${raw.id}`, { method: 'PUT', body: { selling_price: 4321 } });
+    assert.notEqual((await must('/bootstrap/lite')).catalog_version, v1, 'harga berubah -> versi berubah');
+
+    const fin = await must('/items', { method: 'POST', body: { name: 'Produk Versi API', item_type: 'finished', selling_price: 9000, production_mode: 'make_to_order' } });
+    const v2 = (await must('/bootstrap/lite')).catalog_version;
+    await must(`/items/${fin.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: raw.id, qty: 7 }] } });
+    assert.notEqual((await must('/bootstrap/lite')).catalog_version, v2, 'resep berubah -> versi berubah');
+  });
+
+  it('SSE /api/events mengirim gerakan stok setelah commit (docs/11 §15)', async () => {
+    const raw = await must('/items', { method: 'POST', body: { name: 'Bahan SSE API', item_type: 'raw', unit: 'gr', cost_price: 200, opening_stock: 100 } });
+    const res = await fetch(BASE + '/api/events', { headers: { authorization: 'Bearer ' + token.owner } });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') || '', /text\/event-stream/);
+    assert.equal(res.headers.get('cache-control'), 'no-cache, no-transform');
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    const events = [];
+    let buf = '';
+    const pump = (async () => {
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const chunks = buf.split('\n\n');
+          buf = chunks.pop();
+          for (const c of chunks) {
+            const line = c.split('\n').find((l) => l.startsWith('data:'));
+            if (line) events.push(JSON.parse(line.slice(5).trim()));
+          }
+        }
+      } catch { /* ditutup di akhir tes */ }
+    })();
+
+    // tunggu sambutan awal
+    for (let i = 0; i < 40 && !events.some((e) => e.type === 'hello'); i += 1) await sleep(25);
+    const hello = events.find((e) => e.type === 'hello');
+    assert.ok(hello, 'event hello terkirim saat koneksi dibuka');
+    assert.ok(hello.catalog_version, 'hello membawa catalog_version');
+
+    // gerakan stok di luar transaksi -> event 'stock'
+    await must('/stock/adjust', { method: 'POST', body: { item_id: raw.id, counted_qty: 75, reason: 'uji SSE' } });
+    for (let i = 0; i < 80 && !events.some((e) => e.type === 'stock'); i += 1) await sleep(25);
+    const stock = events.find((e) => e.type === 'stock');
+    assert.ok(stock, 'event stock diterima tanpa poling');
+    assert.equal(stock.item_id, raw.id);
+    assert.equal(stock.qty, -25);
+    assert.equal(stock.balance_after, 75, `saldo terkirim: ${stock.balance_after}`);
+
+    // penolakan stok (ROLLBACK) tidak boleh menghasilkan event
+    const bahanKurang = await must('/items', { method: 'POST', body: { name: 'Bahan Rollback API', item_type: 'raw', unit: 'gr', cost_price: 100, opening_stock: 1 } });
+    const finProduksi = await must('/items', { method: 'POST', body: { name: 'Produk Rollback API', item_type: 'finished', selling_price: 5000, production_mode: 'make_to_stock' } });
+    await must(`/items/${finProduksi.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: bahanKurang.id, qty: 10 }] } });
+    const before = events.length;
+    const bad = await req('/stock/produce', { method: 'POST', body: { item_id: finProduksi.id, qty: 99999 } });
+    assert.equal(bad.status, 409, 'bahan tidak cukup -> 409');
+    await sleep(150);
+    assert.equal(events.length, before, 'tidak ada event dari transaksi yang di-ROLLBACK');
+
+    await reader.cancel().catch(() => {});
+    await pump;
+  });
+
   it('order tertahan: tahan → daftar → lanjutkan → hapus (dulu 500 storeId is not defined)', async () => {
     const cat = await must('/pos/catalog', { as: 'cashier' });
     const item = cat.finished.find((i) => !i.is_non_stock && (i.stock_qty || 0) > 0) || cat.finished[0];

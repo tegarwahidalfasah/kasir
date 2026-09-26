@@ -4,9 +4,9 @@ Tiga lapisan pengujian, semuanya jalan tanpa dependency tambahan dan **tanpa men
 (masing-masing membuat `KASIR_DATA_DIR` sementara sendiri).
 
 ```bash
-npm test          # unit + integrasi: 77 tes (API 34 · zona waktu 6 · pricing 16 · stok/BOM 21) · ±8 s
+npm test          # unit + integrasi: 85 tes (API 36 · runtime/boot 6 · zona waktu 6 · pricing 16 · stok/BOM 21) · ±12 s
 npm run test:ui   # smoke UI (jsdom + React nyata) 32 pemeriksaan · ±27 s
-npm run test:qa   # QA transaksi massal: 20 pemeriksaan · ±10 s (400 struk)
+npm run test:qa   # QA transaksi massal: 20 pemeriksaan · ±10 s (400 struk) — lihat juga §7 (putaran ketujuh)
 npm run check     # npm test + test:ui + build client
 ```
 
@@ -193,7 +193,32 @@ Empat temuan sisa Sprint 1/2 [`docs/11`](11-analisis-2026-09-17.md) diperbaiki s
 | #11 kapasitas | hapus 2 salinan rumus; `items.js` & `stockhealth.js` memakai `bom.js#rawCapacity()`; `yield_pct` > 100 / ≤ 0 → **400** | API + runtime: resep 10 gr, yield 50%, stok 1.000 gr → katalog **50**, simulate **50**, stock/health **50** (dulu 50/100/100) |
 | Regresi | — | 67 → **77 tes**; 4 tes API baru dijalankan terhadap kode lama → **4 failing** (30 passing) |
 
-## 7. Cara menjalankan & menafsirkan
+## 7. Putaran ketujuh — produksi aman-jujur, katalog realtime, sinkronisasi dokumen (27 Sep 2026)
+
+Temuan #10, #15, dan #14 [`docs/11`](11-analisis-2026-09-17.md) ditutup. Semuanya diverifikasi mesin,
+bukan klaim dokumen.
+
+| Temuan | Perubahan | Bukti |
+|---|---|---|
+| #10 Produksi tanpa rahasia & auto-seed senyap | `assertJwtSecret()` dipanggil `createApp()`/`api/index.js` (bukan saat impor modul, agar `npm run seed` tetap jalan); `KASIR_AUTOSEED=1` + bukan produksi untuk auto-seed; `KASIR_ALLOW_SEED=1` untuk seed manual di produksi | **`server/tests/runtime.test.js` BARU — 6 tes**: boot produksi tanpa rahasia gagal dengan pesan `KASIR_JWT_SECRET wajib diisi…openssl rand -hex 32` dan **tidak menulis** `.jwt-secret`; seed di produksi ditolak menyebut `KASIR_ALLOW_SEED=1`; produksi + rahasia → `/api/health` `{ok:true}`; jalur `/api/*` tak dikenal **401** tanpa token (404 dengan token) |
+| #15 `/bootstrap` penuh tiap 45 s per tab | `GET /api/bootstrap/lite` (≥5× lebih kecil: user, permissions, store, `settings.theme`, `alerts_unread`, `catalog_version`); `catalog_version` = sha1 12 karakter atas hitungan katalog **tanpa angka stok**; `GET /api/events` (SSE) menyiarkan event `stock` setelah COMMIT | 2 tes API baru: lite ≥5× lebih kecil + versi katalog **tetap** saat opname stok (`counted_qty`) namun berubah saat barang/harga/resep berubah; klien SSE menerima `hello` lalu `stock` (`qty -25`, `balance_after 75`) tanpa satu pun permintaan polling, sementara `POST /stock/produce` yang gagal 409 **tidak** memancarkan event (bukti event dikirim setelah batching commit) |
+| #14 Dokumen menyimpang | Express 4 → 5, klaim `cors`/`multer` dihapus, "16 indeks" → **19** (16 biasa + 3 unik), `DATA_DIR` → `server/src/data`, komentar dedup alert 24 → **6 jam**, klaim `28/28` pada dokumen ini diperjelas sebagai catatan historis | `grep` ulang seluruh dokumen bersih; jumlah indeks dicocokkan dengan `sqlite_master` DB hasil seed (`table 21 · view 1 · index 19`) |
+
+Hasil akhir putaran ini (semua dijalankan di CI sebelum commit di-*push*):
+
+| Perintah | Hasil |
+|---|---|
+| `npm test` | **85 lulus, 0 gagal** — `api` 36 · `runtime` 6 · `datetime` 6 · `pricing` 16 · `stock` 21 |
+| `npm run test:ui` | **32 langkah**, exit 0 (`🎉 smoke UI lolos`) |
+| `npm run test:qa` | **20/20** — DOM disamakan dengan perhitungan API |
+| `npm run build` | sukses (±1,3 s) |
+
+> Catatan untuk pembaca lama: angka `57/57` dan `28/28` pada §3 adalah hasil **pada putaran itu**
+> (17 Sep 2026). Jumlah tes bertambah setiap putaran; yang berlaku sekarang adalah tabel di atas.
+> CI (`.github/workflows/ci.yml`) menjalankan keempat perintah pada setiap *push*, sehingga angka
+> yang basi akan langsung ketahuan gagal.
+
+## 8. Cara menjalankan & menafsirkan
 
 ```bash
 cd /home/user/kasir
@@ -212,7 +237,7 @@ Keluaran yang menunjukkan masalah:
 | smoke UI “Cannot find package 'jsdom'” | devDependency belum terpasang | `npm i` di root (`jsdom` + `esbuild` ada di `devDependencies`) |
 | smoke UI “Build failed … Unexpected \"catch\"” | sintaks JSX | perbaiki berkas; runner sengaja tidak membungkam error esbuild |
 
-## 8. Rencana pengujian lanjutan (sebelum v1.0)
+## 9. Rencana pengujian lanjutan (sebelum v1.0)
 
 1. **Uji properti acak untuk `pricing.js`** (diskon non-stackable, batas `max_discount`, pembulatan) — 500 kasus acak
    dibandingkan implementasi reference; saat ini 16 kasus tangan.

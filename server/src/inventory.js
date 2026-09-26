@@ -6,6 +6,7 @@
 // ===========================================================================
 import { firstRow, allRows, exec, uid, nowIso, round2 } from './db/index.js';
 import { storeTimezone, dayBoundsUtc } from './lib/tz.js';
+import { publish } from './events.js';
 
 const EPS = 1e-9;
 
@@ -41,6 +42,18 @@ export function postMovement(p) {
     p.userId || null, p.createdAt || nowIso()
   );
   exec(`UPDATE items SET stock_qty = ?, updated_at = datetime('now') WHERE id = ?`, balance, item.id);
+
+  // Notifikasi real-time ke klien (SSE). Ditahan oleh tx() sampai COMMIT berhasil.
+  publish(item.store_id || p.storeId, {
+    type: 'stock',
+    item_id: item.id,
+    item_type: item.item_type,
+    movement_type: p.type,
+    qty,
+    balance_after: balance,
+    ref_type: p.refType || null,
+    ref_id: p.refId || null,
+  });
 
   // Moving-average cost: stok masuk bahan baku memperbarui HPP rata-rata
   if (qty > 0 && item.item_type === 'raw' && Number(p.unitCost) > 0) {

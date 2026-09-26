@@ -13,12 +13,20 @@ import { db, firstRow, exec, uid, nowIso } from './db/index.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SECRET_FILE = process.env.KASIR_SECRET_FILE || (process.env.VERCEL ? path.join('/tmp', '.jwt-secret') : path.join(__dirname, 'data', '.jwt-secret'));
 
-function loadSecret() {
-  if (process.env.KASIR_JWT_SECRET) return process.env.KASIR_JWT_SECRET;
+export function loadSecret() {
+  if (process.env.KASIR_JWT_SECRET) {
+    if (process.env.KASIR_JWT_SECRET.length < 32) {
+      console.warn('[auth] ⚠️  KASIR_JWT_SECRET lebih pendek dari 32 karakter — pakai `openssl rand -hex 32`.');
+    }
+    return process.env.KASIR_JWT_SECRET;
+  }
   try {
     return fs.readFileSync(SECRET_FILE, 'utf8').trim();
   } catch {
     const secret = crypto.randomBytes(32).toString('hex');
+    if (path.resolve(SECRET_FILE).startsWith('/tmp')) {
+      console.warn('[auth] ⚠️  rahasia JWT disimpan di /tmp (tidak persisten) — semua sesi gugur saat restart. Set KASIR_JWT_SECRET.');
+    }
     try {
       fs.mkdirSync(path.dirname(SECRET_FILE), { recursive: true });
       fs.writeFileSync(SECRET_FILE, secret, { mode: 0o600 });
@@ -28,7 +36,26 @@ function loadSecret() {
     return secret;
   }
 }
-const SECRET = loadSecret();
+let SECRET = null;
+const secret = () => (SECRET ||= loadSecret());
+
+/**
+ * Pagar produksi (docs/11 §10): tanpa `KASIR_JWT_SECRET` eksplisit, setiap
+ * deploy/restart membuat rahasia acak baru (semua sesi gugur) — dan di Vercel
+ * rahasianya bahkan ikut hilang bersama container. Dipanggil saat server start
+ * (bukan saat modul dimuat) supaya skrip yang hanya butuh `hashPassword`
+ * — mis. `npm run seed` — tetap bisa berjalan di produksi secara sengaja.
+ */
+export function assertJwtSecret(env = process.env) {
+  if (env.KASIR_JWT_SECRET) return;
+  if (env.NODE_ENV === 'production') {
+    throw new Error(
+      'KASIR_JWT_SECRET wajib diisi saat NODE_ENV=production.\n' +
+      '  Buat:  openssl rand -hex 32\n' +
+      '  Lalu set sebagai environment variable (lihat .env.example & docs/09 §4).'
+    );
+  }
+}
 const TTL_SECONDS = Number(process.env.KASIR_TOKEN_TTL || 12 * 3600);
 
 const b64u = (buf) => Buffer.from(buf).toString('base64url');
@@ -50,7 +77,7 @@ export function verifyPassword(plain, stored) {
 export function signToken(payload, ttl = TTL_SECONDS) {
   const header = b64u(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
   const body = b64u(JSON.stringify({ ...payload, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + ttl }));
-  const signature = crypto.createHmac('sha256', SECRET).update(`${header}.${body}`).digest('base64url');
+  const signature = crypto.createHmac('sha256', secret()).update(`${header}.${body}`).digest('base64url');
   return `${header}.${body}.${signature}`;
 }
 
@@ -59,7 +86,7 @@ export function verifyToken(token) {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
   const [header, body, signature] = parts;
-  const expected = crypto.createHmac('sha256', SECRET).update(`${header}.${body}`).digest('base64url');
+  const expected = crypto.createHmac('sha256', secret()).update(`${header}.${body}`).digest('base64url');
   const a = Buffer.from(signature);
   const b = Buffer.from(expected);
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) return null;
