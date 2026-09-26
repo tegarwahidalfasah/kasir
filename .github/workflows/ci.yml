@@ -1,0 +1,91 @@
+name: CI
+
+# ===========================================================================
+#  CI Kasir — menjalankan seluruh lapisan uji yang dipakai `npm run check`
+#  plus QA simulasi. Node 22 wajib: server memakai `node:sqlite` (>= 22.5).
+#  Lihat docs/08-qa-simulasi.md dan docs/11-analisis-2026-09-17.md §12.
+#
+#  Hanya menjalankan perintah yang sudah ada di package.json (npm ci + skrip npm)
+#  supaya CI selalu memeriksa hal yang sama dengan yang dijalankan pengembang lokal.
+# ===========================================================================
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# Repositori hanya dibaca oleh workflow ini.
+permissions:
+  contents: read
+
+# Push berturut-turut ke branch yang sama membatalkan run sebelumnya.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Uji unit + smoke UI + build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: test
+    steps:
+      - name: Ambil kode
+        uses: actions/checkout@v7
+
+      - name: Siapkan Node.js (versi dari .nvmrc)
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Pasang dependensi
+        run: npm ci
+
+      # 57 tes: API (termasuk isolasi antar toko, race 120 request, alur order
+      # tertahan, pembatas login), pricing, stok/BOM/ledger.
+      # DB sementara per berkas tes, jadi job ini tidak menyentuh data siapa pun.
+      - name: Uji unit backend
+        run: npm test
+
+      # 28 pemeriksaan jsdom: render 11 tampilan, alur bayar → ledger → stok,
+      # alur login, tema tersimpan, dan lebar struk 58/72/80/240 mm.
+      - name: Smoke UI (jsdom)
+        run: npm run test:ui
+
+      - name: Build SPA
+        run: npm run build
+
+      - name: Unggah artefak build
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: client-dist
+          path: client/dist
+          retention-days: 7
+          if-no-files-found: warn
+
+  qa:
+    name: QA simulasi transaksi massal
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NODE_ENV: test
+    steps:
+      - name: Ambil kode
+        uses: actions/checkout@v7
+
+      - name: Siapkan Node.js (versi dari .nvmrc)
+        uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Pasang dependensi
+        run: npm ci
+
+      # 20 pemeriksaan di server sungguhan: 400 struk, 120 permintaan paralel pada
+      # bahan yang sama, akurasi BOM vs rumus, void massal, RBAC, pemindaian kolom rahasia.
+      - name: Simulasi 400 transaksi + uji RBAC & kebocoran data
+        run: npm run test:qa

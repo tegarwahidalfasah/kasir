@@ -1,5 +1,7 @@
 # Kasir — POS web dengan potongan stok bahan baku otomatis
 
+[![CI](https://github.com/tegarwahidalfasah/kasir/actions/workflows/ci.yml/badge.svg)](https://github.com/tegarwahidalfasah/kasir/actions/workflows/ci.yml)
+
 Sistem kasir (Point of Sale) berbasis website untuk UMKM F&B / retail yang menjual **barang jadi hasil produksi sendiri**.
 Ciri utamanya: satu produk dapat memotong **banyak bahan baku sekaligus** dalam satu transaksi (Bill of Materials / resep),
 stok real-time, hak akses per peran, dan tampilan yang bisa dikustomisasi sendiri oleh pemilik toko tanpa menyentuh kode.
@@ -39,9 +41,9 @@ Detail tiap fase ada di folder [`docs/`](docs/).
 
 | Lapisan | Pilihan | Alasan |
 |---|---|---|
-| Runtime & API | **Node.js ≥ 22.5** + Express 4 | Satu bahasa (JS) di seluruh stack; LTS aktif |
+| Runtime & API | **Node.js ≥ 22.5** + Express 5 | Satu bahasa (JS) di seluruh stack; LTS aktif |
 | Database | **SQLite** lewat modul bawaan `node:sqlite` | Nol dependensi native / nol servis tambahan → deployment cukup 1 proses Node + 1 berkas DB; transaksi ACID + `BEGIN IMMEDIATE` |
-| Migrasi skema | `schema.sql` idempoten (`CREATE … IF NOT EXISTS`) di `server/src/db/` | Skema adalah sumber kebenaran; mudah direplikasi ke produksi |
+| Migrasi skema | `schema.sql` idempoten (`CREATE … IF NOT EXISTS`) + **migrasi aditif kolom** (`migrateSchema()` di `server/src/db/index.js`) | Skema adalah sumber kebenaran & aman dijalankan berulang saat startup; kolom baru pada DB lama ditambahkan otomatis (`ALTER TABLE … ADD COLUMN`) tanpa alat terpisah. Belum ada migrasi bernomor/rollback atau perubahan yang membangun ulang tabel (lihat [docs/01](docs/01-arsitektur.md) §7) |
 | Web frontend | **React 18 + Vite** (SPA) | Build cepat, dev server dengan proxy `/api`, cocok untuk UI interaktif seperti POS |
 | State & data client | Context store buatan sendiri (`client/src/store.jsx`) + helper `api` (`useApi`) | Kebutuhan state aplikasi kecil; menghindari dependensi tambahan |
 | Styling | CSS vanilla + token (design tokens) di `:root` | Tema/logo/menu bisa diganti user lewat `settings.theme` tanpa rebuild |
@@ -59,6 +61,11 @@ npm install
 npm run seed          # contoh data: 328 transaksi 30 hari ke belakang, 9 bahan baku + 9 barang jadi
 npm run dev           # API http://127.0.0.1:4000  +  web http://127.0.0.1:5173
 ```
+
+Versi Node mengikuti [`.nvmrc`](.nvmrc) (`nvm use`). Daftar variabel lingkungan beserta
+nilai produksinya ada di [`.env.example`](.env.example) — catat bahwa aplikasi ini **tidak**
+memuat berkas `.env` otomatis (tanpa dependensi `dotenv`); lihat cara memuatnya di bagian
+kepala berkas contoh tersebut.
 
 Login demo (kata sandi sama untuk semua): `rahasia123`
 
@@ -85,9 +92,20 @@ npm run maintenance -- status              # ukuran DB, cadangan terakhir, stok 
 npm run maintenance -- restore <berkas> --yes
 ```
 
-## Deployment ke Vercel
+## Deployment
 
-Repositori ini telah dikonfigurasi penuh untuk deploy langsung ke **Vercel** (Vite SPA + Express Serverless API):
+**Produksi = VPS / systemd** (dokumen lengkap: [`docs/09-deployment-dan-maintenance.md`](docs/09-deployment-dan-maintenance.md),
+berkas siap pakai di [`ops/`](ops/): unit systemd yang di-harden, contoh Caddy/nginx, crontab cadangan).
+
+> ⚠️ **Vercel hanya untuk demo/pratinjau UI, bukan untuk mencatat penjualan sungguhan.**
+> Di lingkungan serverless, SQLite berada di `/tmp` yang **sementara dan per-instance** (transaksi hilang
+> saat container recycle). Sejak 26 Sep 2026 API juga **menolak start tanpa `KASIR_JWT_SECRET`** di
+> `NODE_ENV=production`, dan **auto-seed data demo dimatikan** kecuali diminta eksplisit dengan
+> `KASIR_AUTOSEED=1` (tetap tidak berlaku bila `NODE_ENV=production`). Rincian & cara mengaktifkan
+> kembali untuk demo privat: [`docs/09` §10](docs/09-deployment-dan-maintenance.md) dan
+> [`docs/11` §10](docs/11-analisis-2026-09-17.md).
+
+Repositori ini telah dikonfigurasi untuk deploy langsung ke **Vercel** (Vite SPA + Express Serverless API):
 
 1. **Push ke Git / GitHub**:
    ```bash
@@ -100,6 +118,9 @@ Repositori ini telah dikonfigurasi penuh untuk deploy langsung ke **Vercel** (Vi
    - Buka [vercel.com](https://vercel.com) dan pilih **Add New... → Project**.
    - Impor repositori ini.
    - Konfigurasi otomatis terbaca dari `vercel.json` (`npm run build` → `client/dist` dan API di `/api/index.js`).
+   - Isi **Environment Variables**: `KASIR_JWT_SECRET` (`openssl rand -hex 32`) — tanpa ini fungsi API
+     mengembalikan error start di produksi. Tambahkan `KASIR_AUTOSEED=1` **hanya** bila Anda memang ingin
+     data demo (akun `budi`/`rahasia123`) terisi otomatis — jangan dipakai dengan `NODE_ENV=production`.
    - Klik **Deploy**.
 
 3. **Deploy via Vercel CLI (Alternatif)**:
@@ -116,7 +137,7 @@ Repositori ini telah dikonfigurasi penuh untuk deploy langsung ke **Vercel** (Vi
 kasir/
 ├─ server/                        API Node + logika domain
 │  ├─ src/index.js                Express: header keamanan, /api, SPA (client/dist), /api/health, error handler
-│  ├─ src/db/schema.sql           21 tabel + view v_stock_health + 16 indeks (idempoten)
+│  ├─ src/db/schema.sql           21 tabel + view v_stock_health + 19 indeks (16 biasa + 3 unik, idempoten)
 │  ├─ src/db/index.js             koneksi node:sqlite (WAL), tx(), allRows/firstRow, saveSetting/loadSetting
 │  ├─ src/auth.js                 scrypt + PIN, token HMAC (JWT-like), pembatas login, audit()
 │  ├─ src/rbac.js                 20 permission & preset 5 role (matriks dapat disunting per toko)
@@ -137,8 +158,9 @@ kasir/
 │  ├─ src/ui.jsx · ui.css         komponen dasar + design token (tema dibaca lewat CSS var)
 │  ├─ src/features/               pos/ · inventory/ · report/ · alerts/ · admin/ · settings/ · receipt/
 │  └─ tests/                      smoke UI: env.js · ui-smoke.entry.jsx · ui-smoke.mjs
-├─ docs/                          10 dokumen (arsitektur → deployment → rencana beta)
-└─ ops/                           crontab, systemd, Caddyfile/nginx, pembungkus maintenance
+├─ docs/                          11 dokumen (arsitektur → deployment → rencana beta → analisis)
+├─ ops/                           crontab, systemd, Caddyfile/nginx, pembungkus maintenance
+└─ .github/workflows/ci.yml       CI: npm test → test:ui → test:qa → build (Node 22)
 ```
 
 ## Dokumen
@@ -155,6 +177,7 @@ kasir/
 | [docs/08-qa-simulasi.md](docs/08-qa-simulasi.md) | Hasil QA Fase 4: transaksi massal, akurasi BOM, kebocoran data, smoke UI |
 | [docs/09-deployment-dan-maintenance.md](docs/09-deployment-dan-maintenance.md) | Deployment, pencadangan, jadwal & prosedur pemeliharaan, rollback |
 | [docs/10-rilis-beta.md](docs/10-rilis-beta.md) | Rencana rilis beta ke pengguna awal |
+| [docs/11-analisis-2026-09-17.md](docs/11-analisis-2026-09-17.md) | Analisis repositori putaran 2: 15 temuan terverifikasi runtime + status perbaikan |
 
 ## Batasan yang diketahui (v0.1.0)
 
@@ -166,4 +189,7 @@ kasir/
 
 ## Lisensi
 
-Source-available untuk keperluan internal proyek; lihat [CHANGELOG.md](CHANGELOG.md) untuk riwayat perubahan.
+**Source-available, bukan open source** — kode boleh dibaca, dipelajari, dan dipakai untuk
+operasional toko sendiri; penyalinan, modifikasi, penyebaran, dan penggunaan sebagai layanan
+pihak ketiga memerlukan izin tertulis. Ketentuan lengkap ada di [LICENSE](LICENSE).
+Riwayat perubahan ada di [CHANGELOG.md](CHANGELOG.md).

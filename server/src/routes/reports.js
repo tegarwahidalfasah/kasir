@@ -7,51 +7,74 @@ import { allRows, firstRow, round2 } from '../db/index.js';
 import { authenticate, requirePerm } from '../middleware/index.js';
 import { stockHealth } from '../stockhealth.js';
 import { http, AppError } from '../lib/http.js';
+import { businessDay, addDays, tzOffsetSql } from '../lib/tz.js';
 
 export const router = express.Router();
 const MOUNT = ''; // path sudah memuat prefiks; mount di index.js memakai '/api'
 const auth = (...p) => [authenticate, ...p.map((x) => requirePerm(x))].flat();
 
 
+/**
+ * Rentang laporan. Default = 30 hari terakhir menurut HARI BISNIS toko
+ * (`settings.store.timezone`), bukan tanggal UTC: transaksi pukul 00:00–06:59 WIB
+ * dulu tercatat pada tanggal UTC hari sebelumnya sehingga hilang dari "hari ini".
+ */
 const range = (req) => {
-  const to = req.query.to || new Date().toISOString().slice(0, 10);
-  const from = req.query.from || new Date(Date.now() - 29 * 86400000).toISOString().slice(0, 10);
-  return { from, to };
+  const today = businessDay(req.timezone);
+  return { from: req.query.from || addDays(today, -29), to: req.query.to || today };
 };
+
 
 router.get(MOUNT + '/reports/summary', auth(), http((req, res) => {
   const { from, to } = range(req);
+  const tz = tzOffsetSql(req.timezone);
   const storeId = req.storeId;
+  // Retur sebagian mengurangi omzet & HPP pada transaksi berstatus 'completed'; transaksi
+  // yang diretur penuh berubah status menjadi 'refunded' sehingga keluar dari agregat ini
+  // (seperti 'voided'). Lihat docs/03 §"retur" dan docs/11 §1.
   const head = firstRow(
     `SELECT COUNT(*) AS tx_count, COALESCE(SUM(grand_total),0) AS gross, COALESCE(SUM(cost_total),0) AS cost,
             COALESCE(SUM(discount_total),0) AS discount, COALESCE(SUM(tax_total),0) AS tax,
-            COALESCE(SUM(service_total),0) AS service
-     FROM transactions WHERE store_id = ? AND status = 'completed' AND date(created_at) BETWEEN ? AND ?`,
+            COALESCE(SUM(service_total),0) AS service,
+            COALESCE(SUM(refund_total),0) AS refunds, COALESCE(SUM(refund_cost),0) AS refund_cost
+     FROM transactions WHERE store_id = ? AND status = 'completed' AND date(created_at, '${tz}') BETWEEN ? AND ?`,
     storeId, from, to
   );
   const voidedCount = firstRow(
-    `SELECT COUNT(*) AS n FROM transactions WHERE store_id = ? AND status = 'voided' AND date(created_at) BETWEEN ? AND ?`,
+    `SELECT COUNT(*) AS n FROM transactions WHERE store_id = ? AND status = 'voided' AND date(created_at, '${tz}') BETWEEN ? AND ?`,
+    storeId, from, to
+  ).n;
+  const refundedCount = firstRow(
+    `SELECT COUNT(*) AS n FROM transactions WHERE store_id = ? AND status = 'refunded' AND date(created_at, '${tz}') BETWEEN ? AND ?`,
     storeId, from, to
   ).n;
   const byDay = allRows(
-    `SELECT date(created_at) AS day, COUNT(*) AS tx_count, SUM(grand_total) AS revenue, SUM(grand_total - cost_total - tax_total) AS profit
-     FROM transactions WHERE store_id = ? AND status = 'completed' AND date(created_at) BETWEEN ? AND ?
+    `SELECT date(created_at, '${tz}') AS day, COUNT(*) AS tx_count,
+            SUM(grand_total - refund_total) AS revenue,
+            SUM(grand_total - refund_total - (cost_total - refund_cost) - tax_total) AS profit
+     FROM transactions WHERE store_id = ? AND status = 'completed' AND date(created_at, '${tz}') BETWEEN ? AND ?
      GROUP BY day ORDER BY day`,
     storeId, from, to
   ).map((r) => ({ ...r, revenue: round2(r.revenue), profit: round2(r.profit) }));
 
   const byHour = allRows(
-    `SELECT CAST(strftime('%H', created_at, 'localtime') AS INTEGER) AS hour, COUNT(*) AS tx_count, SUM(grand_total) AS revenue
-     FROM transactions WHERE store_id = ? AND status = 'completed' AND date(created_at) BETWEEN ? AND ?
+    `SELECT CAST(strftime('%H', created_at, '${tz}') AS INTEGER) AS hour, COUNT(*) AS tx_count,
+            SUM(grand_total - refund_total) AS revenue
+     FROM transactions WHERE store_id = ? AND status = 'completed' AND date(created_at, '${tz}') BETWEEN ? AND ?
      GROUP BY hour ORDER BY hour`,
     storeId, from, to
   ).map((r) => ({ ...r, revenue: round2(r.revenue) }));
 
+  // qty/revenue/HPP dihitung neto: baris yang sudah diretur tidak dihitung terjual
+  // (barangnya kembali ke stok), dengan pembagian proporsional bila hanya sebagian.
   const byItem = allRows(
-    `SELECT ti.item_id, ti.name_snapshot AS name, SUM(ti.qty) AS qty, SUM(ti.line_total) AS revenue,
-            SUM(ti.cost_snapshot * ti.qty) AS cost, SUM(ti.line_discount) AS discount
+    `SELECT ti.item_id, ti.name_snapshot AS name,
+            SUM(ti.qty - ti.refunded_qty) AS qty,
+            SUM(CASE WHEN ti.qty > 0 THEN ti.line_total * (ti.qty - ti.refunded_qty) / ti.qty ELSE 0 END) AS revenue,
+            SUM(ti.cost_snapshot * (ti.qty - ti.refunded_qty)) AS cost,
+            SUM(ti.line_discount) AS discount
      FROM transaction_items ti JOIN transactions t ON t.id = ti.transaction_id
-     WHERE t.store_id = ? AND t.status = 'completed' AND date(t.created_at) BETWEEN ? AND ?
+     WHERE t.store_id = ? AND t.status = 'completed' AND date(t.created_at, '${tz}') BETWEEN ? AND ?
      GROUP BY ti.item_id, ti.name_snapshot ORDER BY revenue DESC LIMIT 25`,
     storeId, from, to
   ).map((r) => ({
@@ -64,32 +87,35 @@ router.get(MOUNT + '/reports/summary', auth(), http((req, res) => {
      FROM transaction_payments p
      JOIN transactions t ON t.id = p.transaction_id
      LEFT JOIN payment_methods pm ON pm.id = p.payment_method_id
-     WHERE t.store_id = ? AND t.status = 'completed' AND date(t.created_at) BETWEEN ? AND ?
+     WHERE t.store_id = ? AND t.status = 'completed' AND date(t.created_at, '${tz}') BETWEEN ? AND ?
      GROUP BY p.payment_method_id ORDER BY amount DESC`,
     storeId, from, to
   ).map((r) => ({ ...r, amount: round2(r.amount) }));
 
   const byCashier = allRows(
-    `SELECT u.display_name AS name, COUNT(t.id) AS tx_count, SUM(t.grand_total) AS revenue, SUM(t.grand_total - t.cost_total) AS gross_profit
+    `SELECT u.display_name AS name, COUNT(t.id) AS tx_count, SUM(t.grand_total - t.refund_total) AS revenue,
+            SUM(t.grand_total - t.refund_total - (t.cost_total - t.refund_cost)) AS gross_profit
      FROM transactions t LEFT JOIN users u ON u.id = t.cashier_id
-     WHERE t.store_id = ? AND t.status = 'completed' AND date(t.created_at) BETWEEN ? AND ?
+     WHERE t.store_id = ? AND t.status = 'completed' AND date(t.created_at, '${tz}') BETWEEN ? AND ?
      GROUP BY t.cashier_id ORDER BY revenue DESC`,
     storeId, from, to
   ).map((r) => ({ ...r, revenue: round2(r.revenue), gross_profit: round2(r.gross_profit) }));
 
-  const revenue = round2(head.gross);
+  const revenue = round2(head.gross - head.refunds);
+  const cost = round2(head.cost - head.refund_cost);
   res.json({
     period: { from, to },
     totals: {
       tx_count: head.tx_count,
       gross_revenue: revenue,
       net_revenue: round2(revenue - head.tax),
-      cost: round2(head.cost),
-      gross_profit: round2(revenue - head.cost - head.tax),
-      margin_pct: revenue > 0 ? round2(((revenue - head.cost - head.tax) / revenue) * 100) : 0,
+      cost,
+      gross_profit: round2(revenue - cost - head.tax),
+      margin_pct: revenue > 0 ? round2(((revenue - cost - head.tax) / revenue) * 100) : 0,
       avg_ticket: head.tx_count ? round2(revenue / head.tx_count) : 0,
       discount: round2(head.discount), tax: round2(head.tax), service: round2(head.service),
-      voided: voidedCount,
+      refund_total: round2(head.refunds), refund_cost: round2(head.refund_cost),
+      voided: voidedCount, refunded: refundedCount,
     },
     by_day: byDay, by_hour: byHour, by_item: byItem, by_payment: byPayment, by_cashier: byCashier,
   });
@@ -98,6 +124,7 @@ router.get(MOUNT + '/reports/summary', auth(), http((req, res) => {
 /** Konsumsi bahan baku vs pembelian — inti dari "estimasi kehabisan bahan". */
 router.get(MOUNT + '/reports/raw-usage', auth(), http((req, res) => {
   const { from, to } = range(req);
+  const tz = tzOffsetSql(req.timezone);
   const storeId = req.storeId;
   const cfg = { consumption_window_days: Math.max(1, Math.round((new Date(to) - new Date(from)) / 86400000) + 1) };
   const health = stockHealth({ storeId, days: cfg.consumption_window_days, lookaheadDays: 14 });
@@ -108,7 +135,7 @@ router.get(MOUNT + '/reports/raw-usage', auth(), http((req, res) => {
             COALESCE(SUM(CASE WHEN m.movement_type = 'purchase_in' THEN m.qty * m.unit_cost END),0) AS purchase_cost,
             COALESCE(SUM(CASE WHEN m.movement_type = 'adjustment' AND m.qty < 0 THEN ABS(m.qty) END),0) AS waste
      FROM stock_movements m JOIN items i ON i.id = m.item_id
-     WHERE i.store_id = ? AND i.item_type = 'raw' AND date(m.created_at) BETWEEN ? AND ?
+     WHERE i.store_id = ? AND i.item_type = 'raw' AND date(m.created_at, '${tz}') BETWEEN ? AND ?
      GROUP BY i.id ORDER BY consumed DESC`,
     storeId, from, to
   ).map((r) => {
@@ -118,7 +145,7 @@ router.get(MOUNT + '/reports/raw-usage', auth(), http((req, res) => {
       ...r, consumed: round2(r.consumed), purchased: round2(r.purchased), waste: round2(r.waste),
       purchase_cost: round2(r.purchase_cost),
       avg_daily_use: perDay, days_to_stockout: daysLeft,
-      stockout_date: daysLeft != null ? new Date(Date.now() + daysLeft * 86400000).toISOString().slice(0, 10) : null,
+      stockout_date: daysLeft != null ? businessDay(req.timezone, new Date(Date.now() + daysLeft * 86400000)) : null,
       coverage_days: daysLeft, status: health.find((h) => h.id === r.item_id)?.status || 'ok',
     };
   });
@@ -128,13 +155,14 @@ router.get(MOUNT + '/reports/raw-usage', auth(), http((req, res) => {
 /** Pergerakan stok harian (masuk/keluar per jenis) — dipakai grafik "stok harian". */
 router.get(MOUNT + '/reports/stock-movement', auth(), http((req, res) => {
   const { from, to } = range(req);
+  const tz = tzOffsetSql(req.timezone);
   res.json(allRows(
-    `SELECT date(m.created_at) AS day, m.movement_type,
+    `SELECT date(m.created_at, '${tz}') AS day, m.movement_type,
             COALESCE(SUM(CASE WHEN m.qty > 0 THEN m.qty END),0) AS qty_in,
             COALESCE(SUM(CASE WHEN m.qty < 0 THEN ABS(m.qty) END),0) AS qty_out,
             COUNT(*) AS lines
      FROM stock_movements m JOIN items i ON i.id = m.item_id
-     WHERE i.store_id = ? AND date(m.created_at) BETWEEN ? AND ?
+     WHERE i.store_id = ? AND date(m.created_at, '${tz}') BETWEEN ? AND ?
      GROUP BY day, m.movement_type ORDER BY day`,
     req.storeId, from, to
   ));
@@ -156,8 +184,18 @@ router.get(MOUNT + '/reports/inventory-valuation', auth(), http((req, res) => {
 }));
 
 // ------------------------------------------------------------------ ekspor CSV
+/**
+ * Sel CSV yang aman dibuka di Excel/LibreOffice (docs/11 §8).
+ * `customer_name`, `customer_phone`, dan `note` diisi bebas di layar kasir; nilai yang
+ * dimulai `=`, `+`, `-`, `@`, TAB, atau CR akan dieksekusi spreadsheet sebagai FORMULA
+ * (ekfiltrasi sel/DDE). Nilai seperti itu diberi awalan apostrof sehingga diperlakukan
+ * sebagai teks. Angka asli (typeof number) dibiarkan apa adanya agar kolom uang tetap
+ * numerik dan `-5` tidak ikut dinetralkan.
+ */
 const csvCell = (v) => {
-  const s = v == null ? '' : String(v);
+  if (typeof v === 'number' && Number.isFinite(v)) return String(v);
+  let s = v == null ? '' : String(v);
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[",\n;]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 const toCsv = (rows, columns) => [
@@ -167,23 +205,24 @@ const toCsv = (rows, columns) => [
 
 router.get(MOUNT + '/reports/export/:kind', auth('report.export'), http((req, res) => {
   const { from, to } = range(req);
+  const tz = tzOffsetSql(req.timezone);
   const kind = req.params.kind;
   let csv = '';
   let name = kind;
   if (kind === 'sales') {
     const rows = allRows(
       `SELECT t.invoice_no, t.created_at, u.display_name AS cashier, t.status, t.subtotal, t.discount_total,
-              t.tax_total, t.grand_total, t.cost_total, t.customer_name, pm.name AS payment
+              t.tax_total, t.grand_total, t.refund_total, t.cost_total, t.customer_name, pm.name AS payment
        FROM transactions t LEFT JOIN users u ON u.id = t.cashier_id
        LEFT JOIN payment_methods pm ON pm.id = t.payment_method_id
-       WHERE t.store_id = ? AND date(t.created_at) BETWEEN ? AND ? ORDER BY t.created_at DESC`,
+       WHERE t.store_id = ? AND date(t.created_at, '${tz}') BETWEEN ? AND ? ORDER BY t.created_at DESC`,
       req.storeId, from, to);
-    csv = toCsv(rows, ['invoice_no', 'created_at', 'cashier', 'status', 'subtotal', 'discount_total', 'tax_total', 'grand_total', 'cost_total', 'customer_name', 'payment']);
+    csv = toCsv(rows, ['invoice_no', 'created_at', 'cashier', 'status', 'subtotal', 'discount_total', 'tax_total', 'grand_total', 'refund_total', 'cost_total', 'customer_name', 'payment']);
   } else if (kind === 'movements') {
     const rows = allRows(
       `SELECT m.created_at, i.name, i.item_type, m.movement_type, m.qty, i.unit, m.unit_cost, m.balance_after, m.reason
        FROM stock_movements m JOIN items i ON i.id = m.item_id
-       WHERE i.store_id = ? AND date(m.created_at) BETWEEN ? AND ? ORDER BY m.created_at DESC`,
+       WHERE i.store_id = ? AND date(m.created_at, '${tz}') BETWEEN ? AND ? ORDER BY m.created_at DESC`,
       req.storeId, from, to);
     csv = toCsv(rows, ['created_at', 'name', 'item_type', 'movement_type', 'qty', 'unit', 'unit_cost', 'balance_after', 'reason']);
   } else if (kind === 'stock') {

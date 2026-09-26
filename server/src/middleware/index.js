@@ -1,11 +1,12 @@
 // ===========================================================================
 //  Middleware: autentikasi (bearer token) + otorisasi (permission RBAC)
 // ===========================================================================
-import { verifyToken, tooManyAttempts } from '../auth.js';
+import { verifyToken, tooManyAttempts, tooManyUserAttempts } from '../auth.js';
 import { firstRow, loadSetting } from '../db/index.js';
 import { permissionsFor, loadRoleMatrix } from '../rbac.js';
 import { DEFAULTS } from '../config.js';
 import { AppError } from '../lib/http.js';
+import { storeTimezone } from '../lib/tz.js';
 
 // Rute yang boleh diakses tanpa token (login, branding publik, health check).
 export const PUBLIC_PATHS = ['/auth/login', '/public/brand', '/health', '/openapi.json'];
@@ -30,6 +31,9 @@ export function authenticate(req, res, next) {
   req.user = user;
   req.storeId = user.store_id || firstRow(`SELECT id FROM stores WHERE is_active = 1 LIMIT 1`)?.id;
   req.branchId = user.branch_id;
+  // zona waktu toko untuk "hari bisnis" (laporan, nomor struk) — docs/11 §4
+  req.timezone = storeTimezone(req.storeId);
+  req.tz = storeTimezone(req.storeId);
   req.roleMatrix = loadRoleMatrix(loadSetting, req.storeId);
   req.permissions = permissionsFor(user.role, req.roleMatrix);
   next();
@@ -45,8 +49,16 @@ export const requirePerm = (perm) => (req, _res, next) => {
   next();
 };
 
+/**
+ * Pembatas percobaan login. Selain per-IP, juga per-username: header
+ * X-Forwarded-For yang dipalsukan tidak lagi memberi jatah tak terbatas.
+ */
 export const loginGuard = (req, _res, next) => {
-  if (tooManyAttempts(req.ip)) return next(new AppError(429, 'Terlalu banyak percobaan login, tunggu 60 detik'));
+  if (tooManyAttempts(req.ip)) return next(new AppError(429, 'Terlalu banyak percobaan login dari jaringan ini, tunggu 60 detik'));
+  const username = typeof req.body?.username === 'string' ? req.body.username : '';
+  if (username && tooManyUserAttempts(username)) {
+    return next(new AppError(429, 'Terlalu banyak percobaan untuk akun ini, tunggu 60 detik'));
+  }
   next();
 };
 

@@ -88,6 +88,34 @@ async function check(name, node, assertions) {
   }
 }
 
+// ------------------------------------------------------- 0. form login
+// Regression: tombol "Masuk" wajib benar-benar men-submit form. Komponen Button
+// mengunci type="button", sehingga sebelum perbaikan klik tombol tidak melakukan
+// apa pun — tanpa request dan tanpa pesan error; hanya tombol Enter yang bekerja.
+console.log('\n▶ form login: klik tombol "Masuk" harus memicu submit');
+setToken('');
+{
+  const lp = await mount(h(App));
+  const t0 = text(lp.container);
+  ok(t0.includes('Nama pengguna'), 'layar login tampil saat belum ada token');
+  const userInput = lp.container.querySelector('input[autocomplete="username"]');
+  const passInput = lp.container.querySelector('input[type="password"]');
+  ok(!!userInput && !!passInput, 'input username & password ada');
+  const setVal = async (input, value) => {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(input, value);
+      input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    });
+  };
+  await setVal(userInput, 'budi');
+  await setVal(passInput, 'rahasia123');
+  await click(find(lp.container, 'button', 'Masuk'));
+  await settle(6);
+  ok(!!lp.container.querySelector('.sidebar'), 'klik "Masuk" berhasil masuk ke shell (sidebar tampil)');
+  ok(!text(lp.container).includes('Nama pengguna'), 'layar login hilang setelah masuk');
+  lp.unmount();
+}
+
 // ------------------------------------------------------- 1. semua halaman
 console.log('\n▶ render setiap halaman dengan data asli');
 await check('Shell aplikasi (login/boot)', h(App), (c, t) => has(t, 'Kopi Senja'));
@@ -166,5 +194,8 @@ for (const w of [58, 72, 80, 240]) {
 }
 
 console.log(fails ? `\n${fails} pemeriksaan UI gagal\n` : '\n🎉 smoke UI lolos\n');
-process.exit(fails ? 1 : 0);
+// JANGAN process.exit() di sini: bundel ini di-import oleh ui-smoke.mjs, dan keluar
+// paksa membuat runner mati sebelum cleanup() -> server anak jadi orphan di port 4399
+// sehingga run berikutnya diam-diam menguji DB kotor (docs/11 §13). Runner yang keluar.
+export const smokeFails = fails;
 

@@ -5,6 +5,8 @@
 //  Aturan: JANGAN pernah UPDATE items.stock_qty dari file lain.
 // ===========================================================================
 import { firstRow, allRows, exec, uid, nowIso, round2 } from './db/index.js';
+import { storeTimezone, dayBoundsUtc } from './lib/tz.js';
+import { publish } from './events.js';
 
 const EPS = 1e-9;
 
@@ -40,6 +42,18 @@ export function postMovement(p) {
     p.userId || null, p.createdAt || nowIso()
   );
   exec(`UPDATE items SET stock_qty = ?, updated_at = datetime('now') WHERE id = ?`, balance, item.id);
+
+  // Notifikasi real-time ke klien (SSE). Ditahan oleh tx() sampai COMMIT berhasil.
+  publish(item.store_id || p.storeId, {
+    type: 'stock',
+    item_id: item.id,
+    item_type: item.item_type,
+    movement_type: p.type,
+    qty,
+    balance_after: balance,
+    ref_type: p.refType || null,
+    ref_id: p.refId || null,
+  });
 
   // Moving-average cost: stok masuk bahan baku memperbarui HPP rata-rata
   if (qty > 0 && item.item_type === 'raw' && Number(p.unitCost) > 0) {
@@ -92,13 +106,16 @@ export function stockSnapshot(itemIds = []) {
   return Object.fromEntries(rows.map((r) => [r.id, r]));
 }
 
-export function listMovements({ storeId, itemId, limit = 100, from, to, movementTypes } = {}) {
+export function listMovements({ storeId, itemId, limit = 100, from, to, movementTypes, timezone } = {}) {
   const where = ['1=1'];
   const params = [];
   if (storeId) { where.push('m.store_id = ?'); params.push(storeId); }
   if (itemId) { where.push('m.item_id = ?'); params.push(itemId); }
-  if (from) { where.push('m.created_at >= ?'); params.push(from); }
-  if (to) { where.push('m.created_at <= ?'); params.push(to + ' 23:59:59'); }
+  // tanggal polos dari UI = hari bisnis toko; stempel penuh (ISO) dilewatkan apa adanya
+  const tz = timezone || storeTimezone(storeId);
+  const bound = (v, end) => (/^\d{4}-\d{2}-\d{2}$/.test(v) ? dayBoundsUtc(v, tz, end) : v);
+  if (from) { where.push('m.created_at >= ?'); params.push(bound(from, false)); }
+  if (to) { where.push('m.created_at <= ?'); params.push(bound(to, true)); }
   if (Array.isArray(movementTypes) && movementTypes.length) {
     where.push(`m.movement_type IN (${movementTypes.map(() => '?').join(',')})`);
     params.push(...movementTypes);
@@ -109,7 +126,9 @@ export function listMovements({ storeId, itemId, limit = 100, from, to, movement
      JOIN items i ON i.id = m.item_id
      LEFT JOIN users u ON u.id = m.created_by
      WHERE ${where.join(' AND ')}
-     ORDER BY m.created_at DESC, m.id DESC
+     /* created_at hanya presisi 1 detik dan kolom id acak -> rowid (urutan insert)
+        dipakai sebagai pemecah seri agar urutan ledger deterministik (docs/11 #4). */
+     ORDER BY m.created_at DESC, m.rowid DESC
      LIMIT ?`,
     ...params, Math.min(500, Number(limit) || 100)
   );

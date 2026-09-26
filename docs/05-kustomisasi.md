@@ -9,6 +9,10 @@ Dibaca lewat `GET /api/bootstrap` (`settings.*`) atau `GET /api/settings`, disim
 
 ## 1. Profil toko (`store`) — permission `setting.store`
 
+> Setiap blok punya hak sendiri dan **ditegakkan di server** (sejak 26 Sep 2026): `store` & `pos` → `setting.store`,
+> `tax` (+ halaman Diskon) → `setting.tax`, `receipt` → `setting.receipt`, `theme` → `setting.theme`.
+> Halaman Pengaturan bisa dibuka bila user punya salah satu hak itu, dan tab yang tidak diizinkan disembunyikan.
+
 | Kunci | Default | Dipakai di |
 |---|---|---|
 | `name` | `Toko Saya` | header aplikasi, sidebar, baris pertama struk, laporan |

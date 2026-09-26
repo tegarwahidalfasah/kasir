@@ -31,6 +31,8 @@ madeNow          = Q − min(Q, stok_persediaan_barang_jadi)          // untuk M
 * `r.qty` — jumlah bahan **per 1 unit produk**, dalam satuan bahan (`items.unit` bahan; label `r.unit` disalin saat resep disimpan).
 * `r.waste_pct` — susut per baris resep (kulit, sisa potongan, tumpahan).
 * `p.yield_pct` — faktor yield proses pada **produk** (mis. 95 ⇒ bahan yang harus disiapkan 5,26% lebih banyak).
+  Nilai sah 1–100; `POST`/`PUT /api/items` menolak 400 di luar rentang itu (dulu mesin stok meng-clamp
+  diam-diam sehingga angka di master barang menyesatkan).
   Ditempatkan di induk karena susut proses milik produk, bukan per bahan.
 * `r.is_optional = 1` — hanya dipotong bila pelanggan memilih addon/topping yang memakai bahan itu
   (`line.addons[].raw_item_id == r.raw_item_id`) atau kasir mencentangnya lewat `line.selected_optional_raws`.
@@ -54,9 +56,23 @@ Saat retur, `transaction_items.addons_json` (hasil resolusi) yang dipakai supaya
 konsumsi(bahan addon) = raw_qty × addon.qty × Q          // seed: "Extra shot espresso" +Rp6.000 & +9 g biji kopi/porsi
 ```
 
-Saat retur sebagian, `addons_json` baris dipakai ulang agar potongan bahan ikut kembali secara proporsional.
+Saat retur, yang dibalikkan adalah **snapshot konsumsi** yang disimpan saat transaksi dibuat
+(`transaction_items.bom_json` — lihat §5 dan [02-skema-data.md](02-skema-data.md) §5), bukan resep hari ini.
+Baris lama tanpa snapshot memakai `addons_json` + resep saat ini sebagai pendekatan terbaik.
 
 ## 3. Kapasitas: berapa porsi masih bisa dilayani
+
+> **Satu rumus untuk semua endpoint (sejak 26 Sep 2026).** `bom.js#rawCapacity()` adalah satu-satunya
+> perhitungan kapasitas: `/pos/catalog.capacity`, `/items/:id/simulate.max_servable`, dan
+> `/stock/health.serve_capacity` (plus status alert) memakai fungsi yang sama. Sebelumnya dua tempat
+> menulis ulang rumusnya tanpa membagi `yield_pct`, sehingga laporan menjanjikan kapasitas dua kali
+> lebih banyak daripada yang bisa dibuat mesin stok (docs/11 §11).
+
+> `planStockImpact()` menerima `forceConsumeRaw` (sejak 26 Sep 2026 benar-benar dihormati): bila `true`, stok barang jadi
+> **diabaikan** dan bahan baku selalu dipotong — artinya "anggap produk ini dibuat dari bahan sekarang". Dipakai
+> `POST /api/items/:id/simulate` dan jalur cadangan retur data lama; `POST /api/sales` tidak memakainya (POS memakai stok
+> jadi lebih dulu bila ada). Sebelumnya parameter ini dikirim tetapi tidak pernah dipakai mesin BOM, sehingga simulasi
+> menjanjikan potongan bahan padahal kenyataannya memotong barang jadi — lihat docs/11 §3.
 
 ```js
 // server/src/bom.js
@@ -80,7 +96,8 @@ Karena pembaginya **sama** dengan rumus potongan (§2), angka di layar tidak per
    Penolakan karena stok hanya bisa dilewati oleh flag `settings.tax.allow_negative_stock` (jalur internal opname/produksi memang mengizinkan minus).
 5. **Tulis** kepala + baris + pembayaran, lalu catat ledger per item:
    `sale_out` untuk pemakaian stok barang jadi, `bom_consume` untuk setiap bahan (termasuk bahan addon), masing-masing `ref_type='transaction'`, `ref_id=txId`, `reason=invoice_no`, dengan `unit_cost` = `cost_price` item saat itu dan `balance_after` dari hasil UPDATE.
-   Baris item menyimpan `name_snapshot`, `unit_price`, `line_total`, `cost_snapshot`, `addons_json` — jadi struk & HPP tidak berubah walaupun master barang disunting kemudian.
+   Baris item menyimpan `name_snapshot`, `unit_price`, `line_total`, `cost_snapshot`, `addons_json` — jadi struk & HPP tidak berubah walaupun master barang disunting kemudian —
+   ditambah `bom_json`: hasil `planStockImpact` untuk baris itu (`finished` = barang jadi yang dipotong, `raw` = bahan per baris penjualan). Ini yang dibalikkan retur, sehingga retur tetap benar walaupun resep diubah setelah penjualan.
 6. **Snapshot struk** (`receipt_snapshot`): toko, layout/lebar kertas, blok pajak & metode bayar, baris, total, pembayaran, kembalian.
 7. **Hitung HPP & margin** (`cost_total`) lalu **audit** `sale.create`.
 8. Setelah commit, **bangkitkan peringatan stok** (`generateAlerts(storeId, {days: tax.consumption_window_days, lookaheadDays: tax.alert_lookahead_days})`) — dibungkus `try/catch` supaya alert tidak pernah menggagalkan penjualan.
@@ -93,13 +110,30 @@ sekali di akhir alih-alih per struk (`routes/pos.js` → `sales.js`).
 
 | Aksi | Endpoint | Efek pada ledger |
 |---|---|---|
-| Batalkan struk | `POST /api/sales/:id/void` | `reverseMovements({refType:'transaction', refId})`: gerakan keluar (`sale_out`, `bom_consume`) → baris **`return_in`** qty positif penuh; gerakan masuk (`purchase_in`, `production_in`) → **`adjustment`** negatif; baris lama ditandai `voided=1`. Stok kembali persisi (QA §1.6: 400/400). Hanya status `completed`; tanpa `sale.void` → `403` |
-| Retur sebagian | `POST /api/sales/:id/refund` `{item_id, qty, reason}` | Proporsional `f = qty_retur / qty_baris`: `return_in` barang jadi `deduct_qty×f` dan tiap bahan `r.qty×f`, dihitung ulang dengan `planStockImpact` (+`addons_json`) |
+| Batalkan struk | `POST /api/sales/:id/void` | `reverseMovements({refType:'transaction', refId})`: gerakan keluar (`sale_out`, `bom_consume`) → baris **`return_in`** qty positif penuh; gerakan masuk (`purchase_in`, `production_in`) → **`adjustment`** negatif; baris lama ditandai `voided=1`. Stok kembali persisi (QA §1.6: 400/400). Hanya status `completed`; tanpa `sale.void` → `403`. **Ditolak `409` bila transaksi sudah punya retur** — membatalkan setelah retur akan mengembalikan stok yang sama dua kali |
+| Retur sebagian | `POST /api/sales/:id/refund` `{item_id, qty, reason}` | Proporsional `f = qty_retur / qty_baris`: `return_in` barang jadi & tiap bahan dari **snapshot `bom_json`** baris itu (`×f`). Bila snapshot `NULL` (data sebelum 26 Sep 2026) → dihitung ulang dengan `planStockImpact` + `forceConsumeRaw` seperti perilaku lama. **Berpagar**: `transaction_items.refunded_qty` dinaikkan di dalam `tx()` yang sama dan permintaan yang melebihi sisa (`qty − refunded_qty`) ditolak `409` — retur tidak bisa diulang untuk menggandakan stok. Uang yang dikembalikan proporsional terhadap bagian baris pada tagihan dan diakumulasi ke `transactions.refund_total` (HPP ke `refund_cost`); bila seluruh baris sudah diretur penuh, status struk menjadi `refunded` |
 | Opname / koreksi | `POST /api/stock/adjust` `{counted_qty}` atau `{items:[{item_id, counted_qty, reason}]}` | Selisih terhadap stok saat ini ditulis sebagai `adjustment` (`ref_type='manual'`, `allowNegative:true`); baris yang tidak berubah di-*skip*; respons menyertakan `alerts` hasil pindai ulang |
 | Produksi terjadwal (MTS) | `POST /api/stock/produce` `{item_id, qty, reason?}` | Per bahan: `bom_consume` = `qty × r.qty × (1+waste) ÷ (yield/100)` (`ref_type='production'`); barang jadi: `production_in` = `qty × yield/100` dengan `unit_cost` = `cost_price` item. HPP roll-up dijaga lewat `syncCost()` saat resep disimpan |
 | Terima PO | `POST /api/purchase-orders/:id/receive` `{items?:{[poi_id]:{qty_received}}}` | `purchase_in` per baris (`ref_type='purchase_order'`), `qty_received` ditambah, status → `partial`/`received`; **HPP rata-rata bergerak** dihitung ulang di `inventory.js` |
 | Buat barang/jasa | `POST /api/items` · `PUT /api/items/:id` | Tidak menyentuh stok; menyimpan ulang resep memicu `syncCost()` → HPP barang jadi = Σ `r.qty × harga pokok bahan × (1+susut)` |
 | Nonaktifkan/hapus barang | `DELETE /api/items/:id` | Bila masih dipakai transaksi/resep → `is_active=0` (`{ok, soft_deleted:true}`); ledger & struk lama tetap utuh |
+
+### Retur: apa yang terjadi pada angka
+
+| Angka | Perlakuan |
+|---|---|
+| Stok | Barang jadi & tiap bahan kembali proporsional (`return_in`, `ref_type='refund'`) persis seperti yang tercatat di `bom_json` saat jual — resep/harga yang berubah setelahnya tidak berpengaruh |
+| Sumber kebenaran | `transaction_items.bom_json` (snapshot saat jual). Bila `NULL`: fallback resep saat ini, gerakan bertanda `Retur BOM (tanpa snapshot) …` |
+| Sisa yang boleh diretur | `qty − refunded_qty` per baris; permintaan melebihi sisa → `409 Hanya N dari M "…" yang masih bisa diretur` |
+| Uang | `refund_total +=` bagian baris × `grand_total` (ikut bagian pajak/biaya/pembulatan) — retur penuh tidak pernah melebihi `grand_total` |
+| HPP | `refund_cost += cost_snapshot × qty` — barang yang kembali tidak dihitung sebagai HPP terjual |
+| Status struk | Retur sebagian → tetap `completed` (dengan `refund_total > 0`); semua baris penuh → `refunded` |
+| Laporan | Omzet, HPP, dan laba kotor di `GET /api/reports/summary` dihitung neto setelah retur; `totals.refund_total` & `totals.refunded` menampilkan nilainya |
+
+Belum dikerjakan (Sprint 1/2 docs/11): status tersendiri untuk retur sebagian (butuh membangun ulang CHECK
+`transactions.status`), tabel `refunds` sebagai buku retur tersendiri, dan baris uang keluar di
+`transaction_payments`.
+
 
 ## 6. Kesehatan stok & peringatan (Fase 3)
 

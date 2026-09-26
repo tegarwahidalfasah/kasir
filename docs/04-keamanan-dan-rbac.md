@@ -11,7 +11,8 @@ Ancaman yang dijaga di v0.1.0:
 | Transaksi ganda karena tombol ditekan dua kali / koneksi putus | kunci idempotensi `transactions.external_ref` UNIQUE + `POST /api/sales` mengembalikan struk lama |
 | Data stok dirusak lewat API langsung | tidak ada endpoint "ubah stok_qty"; semua perubahan lewat ledger + permission `stock.adjust` |
 | Rekaman transaksi berubah setelah pengaturan diedit | `receipt_snapshot` per struk; item menyimpan `name_snapshot`, `unit_price`, `cost_snapshot` |
-| Percobaan tebak kata sandi | `loginGuard` → `tooManyAttempts(ip)`: 5 percobaan / 60 detik per IP (in-memory), balas 429 |
+| Percobaan tebak kata sandi | `loginGuard` → dua ember 60 detik (in-memory): **per-IP 5×** (`tooManyAttempts`) dan **per-username 8×** (`tooManyUserAttempts`), balas 429. Ember per-username membuat `X-Forwarded-For` palsu tidak lagi memberi jatah tak terbatas |
+| `X-Forwarded-For` dipalsukan klien | `trust proxy` default `'loopback'` — XFF hanya dipercaya bila hop terakhir adalah proxy di mesin yang sama (Caddy/nginx sesuai `ops/`). Set `KASIR_TRUST_PROXY=1` atau CIDR proxy Anda di produksi |
 | Token curian dipakai selamanya | token berumur (default 12 jam) + `POST /api/auth/refresh` untuk perpanjangan sadar-sesi |
 | Bocor kolom sensitif ke klien | katalog & `publicUser()` hanya memilih kolom yang diperlukan; tidak ada `password_hash`/`pin` di respons mana pun (diperiksa `server/scripts/qa-simulasi.js` §4) |
 | Data toko A terbaca di toko B | `req.storeId` diambil dari user di token, dan **setiap** query menyertakan `store_id = ?` |
@@ -26,13 +27,20 @@ Ancaman yang dijaga di v0.1.0:
 * **Token**: JWT HS256 dibentuk manual (`header.payload.signature`, base64url). Payload `{ uid, role, sid, iat, exp }`.
   Verifikasi: panjang & `timingSafeEqual` pada signature, lalu `exp`. Tidak ada sesi di DB → token tidak dapat dicabut satu per satu;
   untuk memutus akses orang, **nonaktifkan user** (`users.is_active = 0`) karena `authenticate` membaca ulang baris user setiap permintaan.
-* **Rahasia**: `KASIR_JWT_SECRET`; bila kosong, dibuat acak 32 byte dan disimpan di `server/src/data/.jwt-secret` (mode `0600`).
+* **Rahasia**: `KASIR_JWT_SECRET`; bila kosong, dibuat acak 32 byte dan disimpan di `server/src/data/.jwt-secret` (mode `0600`). **Pengecualian produksi (sejak 26 Sep 2026):** bila `NODE_ENV=production` dan `KASIR_JWT_SECRET` kosong, server **menolak start** (`KASIR_JWT_SECRET wajib diisi saat NODE_ENV=production … openssl rand -hex 32`) — berkas `.jwt-secret` tidak ditulis dan tidak ada port yang dibuka. Pagar ini dipanggil dari `createApp()`/`api/index.js` (saat server start), bukan saat modul `auth.js` dimuat, supaya perintah seperti `npm run seed` tetap bisa dijalankan.
+* **Auto-seed data demo mati secara default.** `api/index.js` hanya memanggil `runSeed()` bila `KASIR_AUTOSEED=1` **dan** bukan produksi; `scripts/seed.js` menolak di produksi kecuali disengaja dengan `KASIR_ALLOW_SEED=1`.
   Berkas ini tidak masuk git dan tidak boleh hilang (bila hilang, semua sesi login kembali).
 * **Token hanya lewat header** `Authorization: Bearer …`. Fallback `?token=` di query string sudah dihapus
   (token di URL tertinggal di log proxy & riwayat peramban).
 * **Header keamanan** dipasang di `server/src/index.js`: `X-Content-Type-Options: nosniff`, `Referrer-Policy: same-origin`,
-  dan CSP: `default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors *`
-  (`data:` perlu untuk logo & struk; `unsafe-inline` untuk gaya yang disuntik tema).
+  dan CSP: `default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; font-src 'self' data:; object-src 'none'; base-uri 'self'; frame-ancestors 'self'`
+  (`data:` perlu untuk logo & struk; `unsafe-inline` untuk gaya yang disuntik tema; `frame-ancestors 'self'`
+  menutup clickjacking pada tombol bayar/void — sebelumnya `*`).
+* **Pembatas login** (`loginGuard`) memakai dua ember sekaligus. Ember per-IP mudah dilewati bila
+  `trust proxy` terlalu longgar, karena itu IP yang dipercaya dibatasi lewat `KASIR_TRUST_PROXY`
+  (default `'loopback'`) dan setiap username punya ember sendiri (default 8 percobaan/60 detik,
+  `KASIR_LOGIN_LIMIT_USER`). Keduanya in-memory: hilang saat restart dan tidak dibagi antar proses —
+  bila kelak berjalan multi-proses/serverless, pindahkan ke store bersama (Redis/tabel DB).
 
 ## 3. RBAC
 
@@ -69,7 +77,10 @@ Ancaman yang dijaga di v0.1.0:
 * Rute yang butuh role-level: `PUT /api/roles/:role` dan `POST /api/roles/reset` (`role.manage`), `GET /api/audit` (`role.manage` atau `system.maintenance`).
 * Rute dengan pilihan banyak permission memakai OR: `GET /api/users` (`user.manage`|`role.manage`),
   `GET /api/branding/palettes` (`setting.theme`|`setting.store`), `GET /api/alerts/replenish` (`stock.purchase`|`stock.view`).
-* **Perluat tambahan (per-rute, bukan per-middleware)** yang sudah dipakai: `setting.*` (blok mana yang boleh diubah menentukan permission),
+* **Perluat pembatas per-rute** yang sudah dipakai: `setting.*` — **ditegakkan per blok sejak 26 Sep 2026**: rute `PUT /api/settings/:key`
+  menerima keempat hak `setting.*`, lalu peta blok→permission yang memutuskan (`store`/`pos` → `setting.store`,
+  `tax` → `setting.tax`, `receipt` → `setting.receipt`, `theme` → `setting.theme`). Sebelumnya hak `setting.store`
+  adalah kunci master: pemiliknya bisa menurunkan PPN atau mengganti tema (docs/11 §7).
   `report.export` untuk unduh CSV, `system.maintenance` untuk integritas/rekonsiliasi/cadangan.
 * **Larangan lintas toko**: `GET /api/users/:id` dsb. tidak ada; semua lookup memakai `WHERE id = ? AND store_id = ?`
   → 404, bukan 403, supaya tidak membocorkan keberadaan id milik tenant lain.

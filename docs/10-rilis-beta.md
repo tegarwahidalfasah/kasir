@@ -14,14 +14,19 @@ selama **4 minggu**, dengan 1 pendampingan per toko. Keluaran yang diharapkan: k
 | Laporan: penjualan harian, per jam, produk, kasir, metode bayar; pergerakan stok; pemakaian bahan & estimasi habis; valuasi persediaan; ekspor CSV | Laporan berjadwal (email), BI/kustom query builder |
 | Kustomisasi tema, logo, urutan menu, blok teks struk, pajak & diskon dinamis, metode pembayaran | Desainer struk visual drag-and-drop, lebih dari 1 layout per toko |
 | Cadangan harian `VACUUM INTO` + verifikasi + restore (CLI & endpoint) | enkripsi DB at-rest, point-in-time recovery (WAL replay) |
+| Pencarian & penyimpanan `barcode`/`sku` per barang | Alur pindai: pengait tombol Enter dari pemindai USB (kini pindai = menyaring daftar, kasir masih menekan item) |
+| Satu metode bayar per transaksi (tunai/QRIS/kartu/transfer) | Pembayaran terbagi (split payment) — tabel `transaction_payments` baru terisi satu baris |
+| Cetak struk lewat `window.print()` (58/72/80 mm) | Cetak langsung ke printer termal (ESC/POS, auto-cut, kick drawer) tanpa dialog peramban |
+| Data pelanggan seadanya (`customer_name`/`customer_phone` di struk) | Master pelanggan, riwayat belanja per pelanggan, poin/loyalti, member |
+| Kasir per perangkat dengan PIN | Shift kas: buka/tutup kas, kas masuk-keluar, rekap selisih kas per kasir |
 
 ## 2. Kriteria penerimaan beta (harus terpenuhi sebelum toko pertama masuk)
 
 Sudah terpenuhi per 16 Sep 2026 (lihat [08-qa-simulasi.md](08-qa-simulasi.md)):
 
-- [x] 51 unit/integrasi backend hijau (`npm test`), termasuk uji isolasi antar toko & race 120 request.
+- [x] 77 unit/integrasi backend hijau (`npm test`), termasuk uji isolasi antar toko, race 120 request, alur order tertahan, pembatas login, pagar retur (retur tidak bisa diulang), dan retur berbasis snapshot BOM.
 - [x] 20/20 QA transaksi massal hijau — 400/400 struk, selisih BOM 0.0000, void mengembalikan seluruh stok, idempoten, tidak ada kebocoran kolom rahasia.
-- [x] 28 smoke UI hijau — 11 tampilan, alur bayar ↔ ledger ↔ stok, tema tersimpan, struk tidak meluber di 4 lebar kertas.
+- [x] 32 smoke UI hijau — 11 tampilan, alur login, alur bayar ↔ ledger ↔ stok, tema tersimpan, struk tidak meluber di 4 lebar kertas.
 - [x] Alat cadangan/pemulihan tersedia (`npm run backup`, `npm run maintenance -- status|verify|restore|prune|vacuum|health`).
 
 Belum (harus selesai sebelum undangan dikirim):
@@ -32,6 +37,30 @@ Belum (harus selesai sebelum undangan dikirim):
 - [ ] Kata sandi akun seed diganti/dinonaktifkan untuk pengguna beta (dok 09 §9).
 - [ ] `KASIR_JWT_SECRET` produksi + `NODE_ENV=production` + proxy TLS (bila akses keluar LAN).
 - [ ] Formulir umpan balik & kanal darurat (nomor WA penanggap) disepakati, SLA tanggapan ≤ 4 jam kerja.
+
+### Risiko teknis yang diketahui (per 26 Sep 2026)
+
+Ditemukan saat penelusuran kode setelah rilis 0.1.0 (temuan urutan pertama — **retur berulang tanpa batas** — sudah diperbaiki, lihat [11](11-analisis-2026-09-17.md) §1 dan CHANGELOG). Sisa yang belum diperbaiki karena masing-masing
+menyentuh data/format yang sudah dipakai — perlu keputusan pemilik sebelum diubah:
+
+- ~~**Zona waktu toko belum diterapkan pada perhitungan tanggal.**~~ ✅ **selesai 26 Sep 2026**:
+  `server/src/lib/tz.js` menurunkan hari bisnis toko dari `stores.timezone` (laporan harian & per jam,
+  nomor struk/PO, filter tanggal Riwayat Penjualan & Ledger, proyeksi kehabisan). Catatan DST: offset
+  diambil pada satu titik waktu — persis untuk zona tanpa DST (seluruh Indonesia), pergeseran ≤ 1 jam
+  hanya mungkin di sekitar pergantian DST. Zona tak dikenal jatuh ke WIB, bukan patah.
+- **Migrasi skema masih satu arah (aditif).** `schema.sql` idempoten + `migrateSchema()` sekarang
+  menambahkan kolom baru secara otomatis ke DB lama (dipakai `transaction_items.refunded_qty`,
+  `transactions.refund_total`, `refund_cost`; diuji dengan DB berskema lama — data lama tetap utuh).
+  Yang belum ada: migrasi bernomor versi (`PRAGMA user_version`), rollback, backfill data, dan
+  perubahan yang membangun ulang tabel (mis. menambah nilai baru pada CHECK `transactions.status`).
+- **Kolom uang bertipe `REAL`, bukan `INTEGER` sen.** Nilai dibulatkan ke Rupiah penuh
+  (`Math.round`) sehingga data seed masih bersih (dicek: `SUM(grand_total)` = bilangan bulat),
+  tetapi secara akuntansi tipe ini menyimpan risiko pembulatan jangka panjang.
+- **Klaim multi-cabang belum sepenuhnya nyata**: stok belum dipisah per cabang, laporan belum
+  dapat difilter per cabang, dan belum ada endpoint transfer/mutasi (lihat dok 01 §7).
+- **Dua advisory dependensi (dev)**: `esbuild` ≤ 0.24.2 dan `vite` ≤ 6.4.2 (GHSA-67mh-4wv8-2f99,
+  dev server dapat diakses situs lain). Hanya berdampak pada `npm run dev`, bukan berkas yang
+  dikirim ke peramban toko; perbaikan menuntut kenaikan Vite ke 6/7.
 
 ## 3. Gelombang & jadwal
 

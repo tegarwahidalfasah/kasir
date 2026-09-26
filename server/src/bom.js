@@ -2,7 +2,7 @@
 //  BOM / Recipe Engine (Fase 1) — satu penjualan bisa memotong N bahan baku.
 //  Konsumsi efektif  = qty x qty_per_unit x (1 + waste% ) / (yield% )
 // ===========================================================================
-import { allRows, firstRow } from './db/index.js';
+import { allRows, firstRow, round6 } from './db/index.js';
 
 /** Ambil seluruh baris resep untuk banyak item sekaligus (1 query). */
 export function recipesFor(parentIds) {
@@ -27,16 +27,19 @@ export function recipesFor(parentIds) {
  * Terjemahkan keranjang penjualan -> daftar potongan stok.
  * @returns {{finished: Array, raw: Array, bom_by_parent: Object, shortages: Array}}
  */
-export function planStockImpact({ lines, catalog, recipes }) {
+export function planStockImpact({ lines, catalog, recipes, forceConsumeRaw = false }) {
   const finished = [];
   const rawMap = new Map();
   const shortages = [];
 
+  // `meta.raw_qty` + `meta.line_item_id` mencatat KONTRIBUSI tiap baris penjualan, sehingga
+  // pemanggil bisa menyimpan konsumsi per baris (snapshot BOM) — dipakai retur agar
+  // membalikkan apa yang benar-benar terpotong saat jual, bukan resep hari ini (docs/11 §2, §3).
   const addRaw = (id, qty, meta) => {
     if (!qty) return;
     const cur = rawMap.get(id) || { item_id: id, qty: 0, lines: [] };
     cur.qty = Math.round((cur.qty + qty) * 1e6) / 1e6;
-    cur.lines.push(meta);
+    cur.lines.push({ ...meta, raw_qty: qty });
     rawMap.set(id, cur);
   };
 
@@ -53,24 +56,28 @@ export function planStockImpact({ lines, catalog, recipes }) {
     // 1. item tanpa BOM              -> potong stok item itu sendiri
     // 2. finished + make_to_stock    -> potong stok jadi saja (bahan sudah dipotong saat /stock/produce)
     // 3. finished + make_to_order    -> potong bahan baku sesuai BOM; stok jadi dipakai bila tersedia
+    // 3b. forceConsumeRaw=true       -> bahan baku SELALU dipotong (stok jadi diabaikan)
     if (!hasBom) {
-      finished.push({ item_id: item.id, name: item.name, requested: qty, deduct_qty: round6(qty), capped_by_raw: false, raw_capacity: null });
+      finished.push({ item_id: item.id, name: item.name, requested: qty, deduct_qty: round6(qty), capped_by_raw: false, raw_capacity: null, line_item_id: item.id });
     } else if (item.production_mode === 'make_to_stock') {
-      finished.push({ item_id: item.id, name: item.name, requested: qty, deduct_qty: round6(qty), capped_by_raw: false, raw_capacity: null });
+      finished.push({ item_id: item.id, name: item.name, requested: qty, deduct_qty: round6(qty), capped_by_raw: false, raw_capacity: null, line_item_id: item.id });
     } else {
-      const fromStock = Math.min(qty, Math.max(0, round6(Number(item.stock_qty) || 0)));
+      // `forceConsumeRaw` (docs/11 §3): paksa potong BAHAN walau stok barang jadi masih ada —
+      // dipakai retur & simulasi. Dulu parameter ini diabaikan sehingga stok yang kembali
+      // (barang jadi) tidak sama dengan yang dipotong saat jual (bahan baku).
+      const fromStock = forceConsumeRaw ? 0 : Math.min(qty, Math.max(0, round6(Number(item.stock_qty) || 0)));
       const madeNow = round6(qty - fromStock);
       if (fromStock > 0) {
-        finished.push({ item_id: item.id, name: item.name, requested: qty, deduct_qty: fromStock, capped_by_raw: false, raw_capacity: null });
+        finished.push({ item_id: item.id, name: item.name, requested: qty, deduct_qty: fromStock, capped_by_raw: false, raw_capacity: null, line_item_id: item.id });
       }
       for (const r of rows) {
         if (r.is_optional && !isAddonChosen(line, r.raw_item_id)) continue;
         const need = round6((madeNow * (Number(r.qty) || 0) * (1 + (Number(r.waste_pct) || 0) / 100)) / yieldFactor);
-        if (need > 0) addRaw(r.raw_item_id, need, { parent: item.name, qty, recipe: r });
+        if (need > 0) addRaw(r.raw_item_id, need, { parent: item.name, line_item_id: item.id, qty, recipe: r });
       }
       // bahan baku dari addon selalu dipotong (addon dibuat saat pesanan masuk)
       for (const a of line.addons || []) {
-        if (a.raw_item_id && a.raw_qty) addRaw(a.raw_item_id, round6(Number(a.raw_qty) * (a.qty ?? 1) * qty), { parent: `${item.name} + ${a.name}`, qty, recipe: null });
+        if (a.raw_item_id && a.raw_qty) addRaw(a.raw_item_id, round6(Number(a.raw_qty) * (a.qty ?? 1) * qty), { parent: `${item.name} + ${a.name}`, line_item_id: item.id, qty, recipe: null });
       }
       // cek kapasitas: stok jadi + bahan yang tersisa harus menutupi qty
       if (madeNow > 0) {
@@ -93,7 +100,6 @@ export function planStockImpact({ lines, catalog, recipes }) {
   return { finished, raw: [...rawMap.values()], shortages };
 }
 
-const round6 = (n) => Math.round((Number(n) || 0) * 1e6) / 1e6;
 
 function isAddonChosen(line, rawItemId) {
   return (line.addons || []).some((a) => a.raw_item_id === rawItemId) || (line.selected_optional_raws || []).includes(rawItemId);

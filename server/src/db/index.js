@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
+import { beginBatch, commitBatch, abortBatch } from '../events.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const DATA_DIR = process.env.KASIR_DATA_DIR || (process.env.VERCEL ? '/tmp' : path.join(__dirname, '..', 'data'));
@@ -42,17 +43,54 @@ if (schema) {
   db.exec(schema);
 }
 
+// ---------------------------------------------------------------- migrasi aditif
+// Skema di schema.sql bersifat idempoten (CREATE ... IF NOT EXISTS), tetapi itu TIDAK
+// mengubah tabel yang sudah ada — menambah kolom baru hanya berpengaruh pada DB baru.
+// Kolom baru karena itu didaftarkan di sini: dipastikan ada saat boot, sehingga DB
+// produksi yang sudah berisi data ikut ter-upgrade tanpa alat migrasi terpisah.
+// Sengaja hanya operasi aditif (ADD COLUMN) yang aman & idempoten; belum ada versi
+// bernomor, rollback, atau perubahan yang membangun ulang tabel (mis. mengubah CHECK).
+const ADDITIVE_COLUMNS = [
+  ['transaction_items', 'refunded_qty', 'REAL NOT NULL DEFAULT 0'],
+  ['transaction_items', 'bom_json', 'TEXT'],
+  ['transactions', 'refund_total', 'REAL NOT NULL DEFAULT 0'],
+  ['transactions', 'refund_cost', 'REAL NOT NULL DEFAULT 0'],
+];
+
+/** Tambahkan kolom yang belum ada; mengembalikan daftar "tabel.kolom" yang baru dibuat. */
+export function migrateSchema() {
+  const applied = [];
+  for (const [table, column, ddl] of ADDITIVE_COLUMNS) {
+    let info = [];
+    try { info = db.prepare(`PRAGMA table_info(${table})`).all(); } catch { /* tabel belum ada */ }
+    if (!info.length || info.some((c) => c.name === column)) continue;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+    applied.push(`${table}.${column}`);
+  }
+  return applied;
+}
+
+const appliedMigrations = migrateSchema();
+if (appliedMigrations.length) {
+  console.log(`[db] migrasi aditif diterapkan: ${appliedMigrations.join(', ')}`);
+}
+
 export const DB_FILE = DB_PATH;
 
 /** Jalankan `fn()` di dalam transaksi SQLite (atomic + rollback saat error). */
 export function tx(fn) {
   db.exec('BEGIN IMMEDIATE');
+  // Event SSE (perubahan stok) ditahan selama transaksi: kalau ROLLBACK, klien
+  // tidak boleh pernah melihat angka yang tidak jadi tersimpan (docs/11 §15).
+  beginBatch();
   try {
     const out = fn(db);
     db.exec('COMMIT');
+    commitBatch();
     return out;
   } catch (err) {
     try { db.exec('ROLLBACK'); } catch { /* ignore */ }
+    abortBatch();
     throw err;
   }
 }
@@ -72,7 +110,10 @@ export const exec = (sql, ...params) => db.prepare(sql).run(...params);
 
 export const uid = (prefix = '') => prefix + crypto.randomUUID().replace(/-/g, '').slice(0, 20);
 export const nowIso = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
-export const round2 = (n) => Math.round((Number(n) || 0) * 1e6) / 1e6;
+export const round6 = (n) => Math.round((Number(n) || 0) * 1e6) / 1e6;
+// `round2` adalah nama lama dari fungsi yang sama (dipakai luas untuk uang & qty).
+// 1e6 dipakai supaya qty bahan desimal (gram/ml) tidak terpangkas.
+export const round2 = round6;
 
 /** Simpan satu blok konfigurasi (JSON) per toko. */
 export function saveSetting(storeId, key, value, userId = null) {

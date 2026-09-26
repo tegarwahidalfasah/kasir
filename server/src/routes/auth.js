@@ -4,7 +4,8 @@
 import express from 'express';
 import { allRows, firstRow, exec, loadSetting } from '../db/index.js';
 import { authenticate, loginGuard } from '../middleware/index.js';
-import { authenticate as login, audit, signToken, verifyPassword, hashPassword, bumpAttempt, clearAttempts } from '../auth.js';
+import { catalogVersion } from '../catalog.js';
+import { authenticate as login, audit, signToken, verifyPassword, hashPassword, bumpAttempt, clearAttempts, bumpUserAttempt, clearUserAttempts } from '../auth.js';
 import { DEFAULTS } from '../config.js';
 import { ROLE_PRESETS, PERMISSIONS } from '../rbac.js';
 import { http, AppError } from '../lib/http.js';
@@ -19,8 +20,13 @@ router.post(MOUNT + '/auth/login', loginGuard, http((req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) throw new AppError(400, 'Username & password wajib diisi');
   const out = login(username, password);
-  if (out.error) { bumpAttempt(req.ip); throw new AppError(401, 'Username atau password salah'); }
-  clearAttempts(req.ip);                 // sukses -> kembalikan jatah percobaan per IP
+  if (out.error) {
+    bumpAttempt(req.ip);                 // ember per-IP
+    bumpUserAttempt(username);           // ember per-username (tahan XFF palsu)
+    throw new AppError(401, 'Username atau password salah');
+  }
+  clearAttempts(req.ip);                 // sukses -> kembalikan jatah percobaan
+  clearUserAttempts(username);
   audit({ userId: out.user.id, role: out.user.role, action: 'auth.login', entity: 'user', entityId: out.user.id, storeId: out.user.store_id, ip: req.ip });
   res.json({ token: out.token, user: publicUser(out.user) });
 }));
@@ -83,6 +89,34 @@ router.get(MOUNT + '/bootstrap', auth(), http((req, res) => {
     roles: Object.entries(ROLE_PRESETS).map(([key, v]) => ({ key, ...v, permissions: req.roleMatrix?.roles?.[key] || v.permissions })),
     permission_list: PERMISSIONS,
     alerts_unread: alertCount,
+    catalog_version: catalogVersion(storeId),
+    server_time: new Date().toISOString(),
+  });
+}));
+
+/**
+ * Bootstrap ringan untuk poling berkala (docs/11 §15).
+ * Berisi hanya yang berubah cepat & kecil — identitas, permission, menu/tema,
+ * jumlah peringatan, dan `catalog_version`. Katalog lengkap + BOM hanya diambil
+ * saat `catalog_version` berubah (klien membandingkan dengan yang dimilikinya),
+ * sedangkan perubahan STOK datang sebagai delta lewat `/api/events`.
+ */
+router.get(MOUNT + '/bootstrap/lite', auth(), http((req, res) => {
+  const storeId = req.storeId;
+  const store = firstRow(`SELECT * FROM stores WHERE id = ?`, storeId) || {};
+  const alertCount = firstRow(
+    `SELECT COUNT(*) AS n FROM alerts a
+     WHERE a.store_id = ? AND a.created_at >= datetime('now','-7 days')
+       AND NOT EXISTS (SELECT 1 FROM alert_reads r WHERE r.alert_id = a.id AND r.user_id = ?)`,
+    storeId, req.user.id
+  )?.n || 0;
+  res.json({
+    user: publicUser({ ...req.user, store_name: store.name }),
+    permissions: req.permissions,
+    store: { ...DEFAULTS.store, ...store, name: store.name || DEFAULTS.store.name },
+    settings: { theme: loadSetting(storeId, 'theme', DEFAULTS.theme) },
+    alerts_unread: alertCount,
+    catalog_version: catalogVersion(storeId),
     server_time: new Date().toISOString(),
   });
 }));

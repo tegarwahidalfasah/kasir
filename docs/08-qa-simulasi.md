@@ -4,9 +4,9 @@ Tiga lapisan pengujian, semuanya jalan tanpa dependency tambahan dan **tanpa men
 (masing-masing membuat `KASIR_DATA_DIR` sementara sendiri).
 
 ```bash
-npm test          # unit + integrasi: 51 tes (pricing 16 · stok/BOM 14 · API 21) · ±5 s
-npm run test:ui   # smoke UI (jsdom + React nyata) 28 pemeriksaan · ±26 s
-npm run test:qa   # QA transaksi massal: 20 pemeriksaan · ±10 s (400 struk)
+npm test          # unit + integrasi: 85 tes (API 36 · runtime/boot 6 · zona waktu 6 · pricing 16 · stok/BOM 21) · ±12 s
+npm run test:ui   # smoke UI (jsdom + React nyata) 32 pemeriksaan · ±27 s
+npm run test:qa   # QA transaksi massal: 20 pemeriksaan · ±10 s (400 struk) — lihat juga §7 (putaran ketujuh)
 npm run check     # npm test + test:ui + build client
 ```
 
@@ -117,7 +117,8 @@ Selain tiga lapisan di atas, `docs/08` versi ini dihasilkan setelah menjalankan 
 ## 3. Smoke UI (render, alur, tema, struk)
 
 Harness: `client/tests/ui-smoke.mjs` (menyalakan seed + API sementara, membundel dengan esbuild) →
-`client/tests/ui-smoke.entry.jsx` (assertion di jsdom) → `client/tests/env.js` (jsdom + stub). 28 pemeriksaan:
+`client/tests/ui-smoke.entry.jsx` (assertion di jsdom) → `client/tests/env.js` (jsdom + stub). 32 pemeriksaan
+(28 pada putaran pertama–ketiga, **+4 pada putaran keempat**: form login – klik "Masuk" harus submit):
 
 * **Render** — 11 tampilan tanpa error JS memakai data asli server (contoh jumlah elemen pada satu kali jalan):
   shell App 159 · Kasir 105 · Stok 578 · Barang & bahan 251 · Pembelian 71 · Dasbor 353 · Laporan 246 ·
@@ -131,8 +132,93 @@ Harness: `client/tests/ui-smoke.mjs` (menyalakan seed + API sementara, membundel
 * **Semua lebar struk** — `buildReceiptLines` untuk 58/72/80/240 mm: baris terlebar 30/40/46/30 ≤ batas kolom
   (32/42/48/120) → nama barang panjang tidak membuat struk meluber.
 * `ui-smoke.mjs` **berhenti dengan kode ≠ 0** bila ada assertion gagal (dipakai di CI/`npm run check`).
+  Sejak 17 Sep 2026 entry tidak lagi memanggil `process.exit()` sendiri: jumlah kegagalan diekspor
+  (`smokeFails`) dan **runner** yang membersihkan server anak lalu keluar. Sebelumnya proses API
+  sementara jadi orphan di port 4399 setiap kali ada assertion gagal, sehingga run berikutnya
+  diam-diam menguji DB kotor run sebelumnya (`docs/11-analisis-2026-09-17.md` §13).
 
-## 4. Cara menjalankan & menafsirkan
+### Putaran verifikasi ketiga (17 Sep 2026) — analisis `docs/11`
+
+`npm run test:ui` kedapatan **merah** di `main` (27/28): assertion "ledger menyimpan gerakan untuk
+`KS…`" gagal. Penyebabnya bukan UI, melainkan stempel waktu: `seed.js` menulis riwayat memakai
+komponen waktu **lokal** sedangkan runtime menulis **UTC** (`nowIso()`), sehingga 67 baris seed
+bertanggal "masa depan" mendorong gerakan struk baru ke peringkat 68 di `ORDER BY created_at DESC`
+— di luar jendela `limit=60`. Perbaikan pada putaran ini:
+
+| Perubahan | Berkas | Efek |
+|---|---|---|
+| Riwayat seed ditulis dalam UTC (jam bisnis 08:00–20:00 WIB = 01:00–13:00 UTC) dan **tidak pernah melewati waktu seed** | `server/scripts/seed.js` | 0 baris masa depan; gerakan terbaru kembali tampil di Ledger |
+| Pemecah seri urutan ledger: `created_at DESC, rowid DESC` (bukan `id` acak) | `server/src/inventory.js` | urutan deterministik untuk gerakan dalam detik yang sama |
+| Entry smoke UI mengekspor `smokeFails`; runner membersihkan server anak (`SIGTERM`+`SIGKILL`, `process.on('exit')`) | `client/tests/ui-smoke.{mjs,entry.jsx}` | tidak ada orphan/port terbawa; hasil CI reproduktif |
+| 6 tes API baru: alur order tertahan (tahan→daftar→lanjut→hapus), nomor hold unik, RBAC `sale.hold`, header CSP, brute force dengan XFF palsu, `KASIR_TRUST_PROXY=false` | `server/tests/api.test.js` | 51 → **57 tes**; menutup celah yang membuat bug `storeId is not defined` lolos |
+| CI GitHub Actions: `npm ci` → `npm test` → `test:ui` → `test:qa` → `build` (Node 22) | `.github/workflows/ci.yml` | "hijau sebelum rilis" kini ditegakkan mesin, bukan klaim dokumen |
+
+Hasil setelah perbaikan: `npm test` **57/57**, `npm run test:ui` **28/28** (exit 0),
+`npm run test:qa` **20/20**, `npm run build` sukses → `npm run check` hijau.
+
+## 4. Putaran keempat — pagar retur (26 Sep 2026)
+
+Temuan P0 #1 [`docs/11`](11-analisis-2026-09-17.md) diperbaiki: retur tidak lagi bisa diulang untuk
+menggandakan stok. Diverifikasi dua lapis:
+
+| Lapisan | Bukti |
+|---|---|
+| Tes regresi (**+4**, 57 → **61**) | 3 di `stock.test.js`: `retur berulang DITOLAK: sisa qty dijaga` · `retur sebagian mencatat uang proporsional` · `transaksi yang sudah diretur tidak boleh DIBATALKAN`; 1 di `api.test.js`: `retur lewat API berpagar` (409, uang, laporan neto, void ditolak). Tiga tes domain dijalankan terhadap kode `sales.js` versi lama → **3 failing** (14 passing); dengan perbaikan → 17 passing |
+| Verifikasi HTTP di server nyata | Struk `KS20260926-1330` (qty 2): retur ke-1 `200` (uang 38.850, status → `refunded`), retur ke-2 & ke-3 `409 "… sudah diretur penuh"`; delta stok setelah penolakan = **0** untuk keenam bahan; omzet laporan turun tepat 38.850; `void` setelah retur → `409`, stok tidak berubah |
+| Retur sebagian | Struk `KS20260926-1319` (baris qty 2): retur 1 → `refund_amount` 22.193, status tetap `completed`, `refunded_qty=1`; omzet laporan Δ −22.193 (persis uang retur), qty barang −1, HPP ikut turun |
+| Migrasi DB lama | DB berskema lama (tanpa kolom baru) dibuka aplikasi → `[db] migrasi aditif diterapkan: transaction_items.refunded_qty, transactions.refund_total, transactions.refund_cost`; `refund_total=0` pada data lama, transaksi lama utuh |
+
+## 5. Putaran kelima — retur berbasis snapshot & `forceConsumeRaw` (26 Sep 2026)
+
+Temuan P0 #2 dan #3 [`docs/11`](11-analisis-2026-09-17.md) diperbaiki. Intinya: retur kini membalikkan **apa yang
+benar-benar terpotong saat jual**, bukan resep/harga hari ini; dan mesin BOM akhirnya menghormati `forceConsumeRaw`.
+
+| Lapisan | Bukti |
+|---|---|
+| Tes regresi (**+6**, 61 → **67**) | 4 di `stock.test.js`: mesin BOM memotong bahan walau stok jadi tersedia (`forceConsumeRaw`), retur memakai snapshot walau resep diubah, retur `make_to_order` mengembalikan bahan bukan barang jadi, data lama tanpa snapshot tetap bisa diretur; 2 di `api.test.js`: jejak audit `items[].bom` + retur pasca-perubahan resep, serta `simulate`/retur menghormati `forceConsumeRaw`. Tiga tes domain dijalankan terhadap `sales.js` versi lama → **3 failing** (17 passing) |
+| Verifikasi HTTP #2 (satu server nyata) | Jual 2 porsi resep **30 gr** → bahan 5.000 → **4.940 gr** (terpakai 60 gr); `bom_json` tersimpan `{"finished":[],"raw":[{"item_id":"…","qty":60}]}`; resep diubah jadi **90 gr**/porsi; retur penuh → bahan kembali ke **5.000 gr** (60 gr, bukan 180 gr); alasan gerakan `Retur BOM …` |
+| Verifikasi HTTP #3 (stok jadi > 0) | Jual 1 porsi saat stok jadi 0 → bahan −100 ml; produksi 5 porsi → barang jadi 5, bahan −500 ml; retur → **bahan +100 ml**, **barang jadi Δ 0** (cara lama: barang jadi +1, bahan 0). Simulasi `POST /items/:id/simulate` kini `deduct_finished: []`, `deduct_raw: [{qty:120}]` |
+| Migrasi & data lama | Kolom `bom_json` di-`DROP` dari salinan DB 331 struk → boot aplikasi: `[db] migrasi aditif diterapkan: transaction_items.bom_json`, 331 struk/445 baris utuh; retur pada struk lama (`bom_json` NULL) → `200`, enam gerakan `return_in` bertanda `Retur BOM (tanpa snapshot) …` |
+
+## 6. Putaran keenam — zona waktu, permission blok setting, CSV & kapasitas (26 Sep 2026)
+
+Empat temuan sisa Sprint 1/2 [`docs/11`](11-analisis-2026-09-17.md) diperbaiki sekaligus: **#4 zona waktu**,
+**#7 permission per blok setting**, **#8 CSV formula injection**, **#11 rumus kapasitas `yield_pct`**.
+
+| Temuan | Perubahan | Bukti |
+|---|---|---|
+| #4 zona waktu | modul baru `server/src/lib/tz.js` (`businessDay`, `businessHour`, `tzOffsetSql`, `dayBoundsUtc`, `storeTimezone` + cache) dipakai laporan, nomor struk/PO, filter tanggal, proyeksi kehabisan | 6 tes `datetime.test.js` (5 gagal di kode lama: `KS20260926-` vs `KS20260927-`) + tes API: struk 01:00 WIB masuk hari WIB (`by_hour = [1]`, bukan `[18]`), 0 struk di tanggal UTC-nya, muncul di `GET /sales` & `/stock/movements` untuk tanggal WIB |
+| #7 permission blok | gerbang rute → `auth([4 perm])`, `\|\| setting.store` dihapus | API: manager ber-`setting.store` saja → `PUT /settings/tax` **403**, theme **403**, receipt **403**, store **200**, PPN tetap 11% |
+| #8 CSV | `csvCell()` menetralkan awalan `=+-@`/TAB/CR; angka tetap numerik | API: nama pelanggan `=HYPERLINK(...)` → `"'=HYPERLINK(...)"`, `grand_total` tetap `11000` |
+| #11 kapasitas | hapus 2 salinan rumus; `items.js` & `stockhealth.js` memakai `bom.js#rawCapacity()`; `yield_pct` > 100 / ≤ 0 → **400** | API + runtime: resep 10 gr, yield 50%, stok 1.000 gr → katalog **50**, simulate **50**, stock/health **50** (dulu 50/100/100) |
+| Regresi | — | 67 → **77 tes**; 4 tes API baru dijalankan terhadap kode lama → **4 failing** (30 passing) |
+
+## 7. Putaran ketujuh — produksi aman-jujur, katalog realtime, sinkronisasi dokumen (27 Sep 2026)
+
+Temuan #10, #15, dan #14 [`docs/11`](11-analisis-2026-09-17.md) ditutup. Semuanya diverifikasi mesin,
+bukan klaim dokumen.
+
+| Temuan | Perubahan | Bukti |
+|---|---|---|
+| #10 Produksi tanpa rahasia & auto-seed senyap | `assertJwtSecret()` dipanggil `createApp()`/`api/index.js` (bukan saat impor modul, agar `npm run seed` tetap jalan); `KASIR_AUTOSEED=1` + bukan produksi untuk auto-seed; `KASIR_ALLOW_SEED=1` untuk seed manual di produksi | **`server/tests/runtime.test.js` BARU — 6 tes**: boot produksi tanpa rahasia gagal dengan pesan `KASIR_JWT_SECRET wajib diisi…openssl rand -hex 32` dan **tidak menulis** `.jwt-secret`; seed di produksi ditolak menyebut `KASIR_ALLOW_SEED=1`; produksi + rahasia → `/api/health` `{ok:true}`; jalur `/api/*` tak dikenal **401** tanpa token (404 dengan token) |
+| #15 `/bootstrap` penuh tiap 45 s per tab | `GET /api/bootstrap/lite` (≥5× lebih kecil: user, permissions, store, `settings.theme`, `alerts_unread`, `catalog_version`); `catalog_version` = sha1 12 karakter atas hitungan katalog **tanpa angka stok**; `GET /api/events` (SSE) menyiarkan event `stock` setelah COMMIT | 2 tes API baru: lite ≥5× lebih kecil + versi katalog **tetap** saat opname stok (`counted_qty`) namun berubah saat barang/harga/resep berubah; klien SSE menerima `hello` lalu `stock` (`qty -25`, `balance_after 75`) tanpa satu pun permintaan polling, sementara `POST /stock/produce` yang gagal 409 **tidak** memancarkan event (bukti event dikirim setelah batching commit) |
+| #14 Dokumen menyimpang | Express 4 → 5, klaim `cors`/`multer` dihapus, "16 indeks" → **19** (16 biasa + 3 unik), `DATA_DIR` → `server/src/data`, komentar dedup alert 24 → **6 jam**, klaim `28/28` pada dokumen ini diperjelas sebagai catatan historis | `grep` ulang seluruh dokumen bersih; jumlah indeks dicocokkan dengan `sqlite_master` DB hasil seed (`table 21 · view 1 · index 19`) |
+
+Hasil akhir putaran ini (semua dijalankan di CI sebelum commit di-*push*):
+
+| Perintah | Hasil |
+|---|---|
+| `npm test` | **85 lulus, 0 gagal** — `api` 36 · `runtime` 6 · `datetime` 6 · `pricing` 16 · `stock` 21 |
+| `npm run test:ui` | **32 langkah**, exit 0 (`🎉 smoke UI lolos`) |
+| `npm run test:qa` | **20/20** — DOM disamakan dengan perhitungan API |
+| `npm run build` | sukses (±1,3 s) |
+
+> Catatan untuk pembaca lama: angka `57/57` dan `28/28` pada §3 adalah hasil **pada putaran itu**
+> (17 Sep 2026). Jumlah tes bertambah setiap putaran; yang berlaku sekarang adalah tabel di atas.
+> CI (`.github/workflows/ci.yml`) menjalankan keempat perintah pada setiap *push*, sehingga angka
+> yang basi akan langsung ketahuan gagal.
+
+## 8. Cara menjalankan & menafsirkan
 
 ```bash
 cd /home/user/kasir
@@ -151,7 +237,7 @@ Keluaran yang menunjukkan masalah:
 | smoke UI “Cannot find package 'jsdom'” | devDependency belum terpasang | `npm i` di root (`jsdom` + `esbuild` ada di `devDependencies`) |
 | smoke UI “Build failed … Unexpected \"catch\"” | sintaks JSX | perbaiki berkas; runner sengaja tidak membungkam error esbuild |
 
-## 5. Rencana pengujian lanjutan (sebelum v1.0)
+## 9. Rencana pengujian lanjutan (sebelum v1.0)
 
 1. **Uji properti acak untuk `pricing.js`** (diskon non-stackable, batas `max_discount`, pembulatan) — 500 kasus acak
    dibandingkan implementasi reference; saat ini 16 kasus tangan.
@@ -160,3 +246,6 @@ Keluaran yang menunjukkan masalah:
 3. **Uji beban multi-kasir sungguhan** (20 koneksi, 30 menit) + pengukuran `p95` `POST /sales`; sekarang hanya 120 permintaan serentak.
 4. **Perf SQLite berkala**: `PRAGMA integrity_check` + `page_count` dicatat mingguan dari hasil `npm run maintenance -- status`.
 5. **Playwright** di CI untuk alur cetak (butuh peramban nyata), dan uji printer termal fisik 58/80 mm.
+6. **Zona ber-DST**: offset saat ini diambil pada satu titik waktu (aman untuk Indonesia yang tanpa DST);
+   tambahkan kasus `America/New_York` di sekitar pergantian DST bila toko di zona itu mulai didukung.
+7. **Kepadatan UI**: smoke UI masih memakai jsdom — uji visual (lebar struk & tabel) belum otomatis.

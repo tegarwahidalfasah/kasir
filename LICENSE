@@ -1,0 +1,87 @@
+Lisensi Source-Available — Seluruh Hak Dilindungi
+(Source-Available License — All Rights Reserved)
+
+Copyright (c) 2026 Tegar Wahid Al-Fasah
+Seluruh hak cipta dilindungi undang-undang.
+
+Perangkat lunak "Kasir" beserta kode sumber, skema basis data, dan dokumennya
+(selanjutnya disebut "Perangkat Lunak") tersedia secara terbuka untuk dibaca,
+namun BUKAN perangkat lunak bebas (open source) dan BUKAN domain publik.
+
+--------------------------------------------------------------------------------
+1. YANG DIIZINKAN TANPA IZIN TERTULIS
+--------------------------------------------------------------------------------
+
+Anda boleh, tanpa biaya:
+
+  a. Membaca, mempelajari, dan mengevaluasi Perangkat Lunak, termasuk membuat
+     salinan lokal semata-mata untuk keperluan membaca dan menguji secara
+     pribadi atau di lingkungan internal Anda; dan
+
+  b. Menjalankan Perangkat Lunak untuk operasional toko/usaha Anda sendiri,
+     termasuk melakukan perubahan konfigurasi (tema, pajak, metode pembayaran,
+     tata letak struk) yang memang disediakan sebagai fitur aplikasi.
+
+Salinan yang dibuat berdasarkan butir (a) dan (b) wajib menyertakan berkas
+lisensi ini beserta pemberitahuan hak cipta di atas.
+
+--------------------------------------------------------------------------------
+2. YANG MEMERLUKAN IZIN TERTULIS DARI PEMEGANG HAK CIPTA
+--------------------------------------------------------------------------------
+
+Tanpa izin tertulis sebelumnya dari pemegang hak cipta, Anda DILARANG:
+
+  a. Menyalin, mempublikasikan, mengunggah, atau menyebarluaskan Perangkat
+     Lunak, baik seluruhnya maupun sebagian, dalam bentuk kode sumber ataupun
+     hasil kompilasi;
+
+  b. Memodifikasi, menurunkan karya (derivative work), menerjemahkan,
+     menggabungkan, atau membuat karya turunan dari Perangkat Lunak, kecuali
+     perubahan konfigurasi yang diizinkan pada butir 1(b);
+
+  c. Menjual, menyewakan, melisensikan ulang, atau menggunakan Perangkat Lunak
+     sebagai bagian dari produk atau layanan berbayar;
+
+  d. Menggunakan Perangkat Lunak untuk menyediakan layanan kepada pihak lain,
+     termasuk tetapi tidak terbatas pada model SaaS, hosting bersama, atau
+     penyerahan (deployment) atas nama klien; dan
+
+  e. Menghapus, menyembunyikan, atau mengubah pemberitahuan hak cipta, nama
+     pemegang hak, atau atribusi lain di dalam Perangkat Lunak.
+
+Untuk memperoleh izin atas hal-hal di atas, hubungi pemegang hak cipta melalui
+kanal yang tercantum pada berkas README.md.
+
+--------------------------------------------------------------------------------
+3. PENYANGKALAN JAMINAN
+--------------------------------------------------------------------------------
+
+PERANGKAT LUNAK DISEDIAKAN "SEBAGAIMANA ADANYA", TANPA JAMINAN APA PUN, BAIK
+TERSURAT MAUPUN TERSIRAT, TERMASUK NAMUN TIDAK TERBATAS PADA JAMINAN
+KELAYAKAN UNTUK DIPERDAGANGKAN, KESESUAIAN UNTUK TUJUAN TERTENTU, DAN TIDAK
+ADANYA PELANGGARAN HAK PIHAK LAIN.
+
+Perangkat Lunak ini menangani data keuangan dan persediaan. Pemegang hak cipta
+TIDAK bertanggung jawab atas kerugian apa pun — termasuk kehilangan data,
+kehilangan keuntungan, atau kesalahan pencatatan — yang timbul dari penggunaan
+Perangkat Lunak. Pengguna bertanggung jawab melakukan pencadangan mandiri
+(`npm run backup`) dan memverifikasi hasilnya sebelum dipakai untuk operasional
+nyata.
+
+--------------------------------------------------------------------------------
+4. KETENTUAN LAIN
+--------------------------------------------------------------------------------
+
+Bila ada ketentuan dalam lisensi ini yang dinyatakan tidak sah atau tidak dapat
+dilaksanakan, ketentuan tersebut akan dipisahkan dan ketentuan lainnya tetap
+berlaku penuh. Lisensi ini tunduk pada hukum yang berlaku di Republik Indonesia.
+
+Versi 0.1.0 — berlaku sejak 26 September 2026.
+
+--------------------------------------------------------------------------------
+NOTE (English summary, for reference only — the Indonesian text above governs):
+This is source-available, proprietary software. You may read, evaluate, and run
+it for your own business operations. Copying, modifying, redistributing,
+sublicensing, selling, or offering it as a service to third parties requires
+prior written permission from the copyright holder. Provided "as is", without
+warranty of any kind.

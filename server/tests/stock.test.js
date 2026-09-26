@@ -6,6 +6,7 @@
 import { describe, it, assert, standalone } from './harness.js';
 import { exec, firstRow, allRows, uid, round2, saveSetting, tx } from '../src/db/index.js';
 import { createSale, voidSale, refundLine, catalogFor, getSale } from '../src/sales.js';
+import { planStockImpact, recipesFor } from '../src/bom.js';
 import { postMovement, ledgerIntegrity, reconcileStock } from '../src/inventory.js';
 import { stockHealth, generateAlerts } from '../src/stockhealth.js';
 import { DEFAULTS } from '../src/config.js';
@@ -130,6 +131,159 @@ describe('stok & BOM', () => {
     assert.equal(stock(biji), 950);
     tx(() => refundLine({ storeId: S.id, txId: r.id, itemId: k, qty: 2, userId: USER }));
     assert.equal(stock(biji), 970, 'retur 2 porsi -> biji kembali 20gr');
+  });
+
+  it('retur berulang DITOLAK: sisa qty dijaga, stok tidak boleh digandakan', () => {
+    const biji = mkRaw('Biji R1', { stock: 1000 });
+    const k = mkFinished('Kopi R1', { price: 10000 });
+    setBom(k, [[biji, 10, 0]]);
+    const r = tx(() => createSale({ storeId: S.id, userId: USER, lines: [{ item_id: k, qty: 4 }] }));
+    assert.equal(stock(biji), 960, 'jual 4 porsi -> 40gr terpakai');
+
+    // retur 3 dari 4 porsi: boleh
+    tx(() => refundLine({ storeId: S.id, txId: r.id, itemId: k, qty: 3, userId: USER }));
+    assert.equal(stock(biji), 990);
+    let line = firstRow(`SELECT refunded_qty FROM transaction_items WHERE transaction_id = ?`, r.id);
+    assert.equal(line.refunded_qty, 3, 'refunded_qty tercatat per baris');
+
+    // percobaan kedua melebihi sisa (3 diminta, sisa 1) -> 409 & stok TIDAK berubah
+    const before = stock(biji);
+    assert.throws(
+      () => tx(() => refundLine({ storeId: S.id, txId: r.id, itemId: k, qty: 3, userId: USER })),
+      (e) => e.status === 409 && /masih bisa diretur/.test(e.message),
+      'minta 3 padahal sisa 1 harus 409'
+    );
+    assert.equal(stock(biji), before, 'retur yang ditolak tidak mengubah stok sama sekali');
+    assert.equal(firstRow(`SELECT refunded_qty FROM transaction_items WHERE transaction_id = ?`, r.id).refunded_qty, 3);
+
+    // retur sisa 1 porsi -> baris penuh, transaksi jadi 'refunded'
+    tx(() => refundLine({ storeId: S.id, txId: r.id, itemId: k, qty: 1, userId: USER }));
+    assert.equal(stock(biji), 1000, 'seluruh bahan kembali setelah retur penuh');
+    const txRow = firstRow(`SELECT status, refund_total FROM transactions WHERE id = ?`, r.id);
+    assert.equal(txRow.status, 'refunded', 'baris penuh -> status refunded');
+    assert.equal(txRow.refund_total, 40000, 'uang retur penuh = grand_total');
+
+    // retur keempat: baris sudah habis -> 409 dan tetap tidak mengubah stok
+    assert.throws(
+      () => tx(() => refundLine({ storeId: S.id, txId: r.id, itemId: k, qty: 1, userId: USER })),
+      (e) => e.status === 409 && /sudah diretur penuh/.test(e.message)
+    );
+    assert.equal(stock(biji), 1000, 'stok tetap utuh (tidak digandakan)');
+    assert.equal(firstRow(`SELECT COUNT(*) n FROM stock_movements WHERE ref_type='refund' AND ref_id=?`, r.id).n,
+      1 + 1, 'hanya dua retur sah yang menulis gerakan (3 + 1)');
+  });
+
+  it('retur sebagian mencatat uang proporsional & mengurangi omzet (bukan grand_total penuh)', () => {
+    const gula = mkRaw('Gula R2', { stock: 1000, unit: 'ml' });
+    const k = mkFinished('Teh R2', { price: 15000 });
+    setBom(k, [[gula, 20, 0]]);
+    const r = tx(() => createSale({ storeId: S.id, userId: USER, lines: [{ item_id: k, qty: 2 }] }));
+    assert.equal(firstRow(`SELECT grand_total FROM transactions WHERE id = ?`, r.id).grand_total, 30000);
+
+    const out = tx(() => refundLine({ storeId: S.id, txId: r.id, itemId: k, qty: 1, userId: USER }));
+    assert.equal(out.refund_amount, 15000, 'setengah tagihan dikembalikan');
+    assert.equal(out.remaining_qty, 1);
+    assert.equal(out.fully_refunded, false);
+    const row = firstRow(`SELECT status, refund_total, refund_cost FROM transactions WHERE id = ?`, r.id);
+    assert.equal(row.status, 'completed', 'retur sebagian belum mengubah status transaksi');
+    assert.equal(row.refund_total, 15000);
+    assert.ok(row.refund_cost > 0, 'HPP barang yang kembali ikut dicatat');
+    assert.equal(stock(gula), 980, 'bahan 1 porsi kembali');
+  });
+
+  it('transaksi yang sudah diretur tidak boleh DIBATALKAN (stok akan kembali dua kali)', () => {
+    const susu = mkRaw('Susu R3', { stock: 500, unit: 'ml' });
+    const k = mkFinished('Latte R3', { price: 20000 });
+    setBom(k, [[susu, 50, 0]]);
+    const r = tx(() => createSale({ storeId: S.id, userId: USER, lines: [{ item_id: k, qty: 2 }] }));
+    tx(() => refundLine({ storeId: S.id, txId: r.id, itemId: k, qty: 1, userId: USER }));
+    assert.equal(stock(susu), 450, 'jual 2 (100ml) lalu retur 1 (50ml)');
+
+    assert.throws(
+      () => tx(() => voidSale({ storeId: S.id, txId: r.id, userId: USER })),
+      (e) => e.status === 409 && /lewat retur, bukan pembatalan/.test(e.message),
+      'void setelah retur harus ditolak'
+    );
+    assert.equal(stock(susu), 450, 'stok tidak berubah oleh pembatalan yang ditolak');
+    assert.equal(firstRow(`SELECT status FROM transactions WHERE id = ?`, r.id).status, 'completed');
+  });
+
+  it('forceConsumeRaw: mesin BOM memotong BAHAN walau stok barang jadi tersedia', () => {
+    const raw = mkRaw('Bahan F1', { stock: 1000, unit: 'ml' });
+    const minuman = mkFinished('Minuman F1', { price: 18000, mode: 'make_to_order', opening: 10 });
+    setBom(minuman, [[raw, 50, 0]]);
+    const catalog = catalogFor(S.id);
+    const recipes = recipesFor([minuman]);
+
+    // tanpa bendera: stok jadi dipakai lebih dulu (10 porsi tersedia)
+    const biasa = planStockImpact({ lines: [{ item_id: minuman, qty: 3 }], catalog, recipes });
+    assert.equal(biasa.finished.length, 1, 'potong barang jadi');
+    assert.equal(biasa.finished[0].deduct_qty, 3);
+    assert.equal(biasa.raw.length, 0, 'tidak menyentuh bahan baku');
+
+    // dengan bendera: bahan baku SELALU dipotong, stok jadi tidak disentuh
+    const paksa = planStockImpact({ lines: [{ item_id: minuman, qty: 3 }], catalog, recipes, forceConsumeRaw: true });
+    assert.equal(paksa.finished.length, 0, 'barang jadi dilewati');
+    assert.equal(paksa.raw.length, 1);
+    assert.equal(paksa.raw[0].qty, 150, '3 porsi x 50 ml');
+    assert.equal(paksa.raw[0].lines[0].line_item_id, minuman, 'kontribusi per baris penjualan terlacak');
+  });
+
+  it('retur memakai SNAPSHOT resep saat jual, bukan resep hari ini (docs/11 §2)', () => {
+    const biji = mkRaw('Biji S1', { stock: 1000 });
+    const k = mkFinished('Kopi S1', { price: 12000 });
+    setBom(k, [[biji, 10, 0]]);
+    const r = tx(() => createSale({ storeId: S.id, userId: USER, lines: [{ item_id: k, qty: 2 }] }));
+    assert.equal(stock(biji), 980, 'jual 2 porsi -> 20 gr');
+
+    // resep diubah SETELAH transaksi (10 gr -> 50 gr per porsi)
+    setBom(k, [[biji, 50, 0]]);
+
+    const out = tx(() => refundLine({ storeId: S.id, txId: r.id, itemId: k, qty: 2, userId: USER }));
+    assert.equal(stock(biji), 1000, 'yang kembali 20 gr (resep SAAT JUAL), bukan 100 gr');
+    assert.equal(out.movements.reduce((s, m) => s + m.qty, 0), 20, 'total gerakan retur = konsumsi lama');
+
+    // dan snapshot tersimpan di baris transaksi
+    const saved = JSON.parse(firstRow(`SELECT bom_json FROM transaction_items WHERE transaction_id = ?`, r.id).bom_json);
+    assert.equal(saved.raw.length, 1);
+    assert.equal(saved.raw[0].item_id, biji);
+    assert.equal(saved.raw[0].qty, 20, 'snapshot menyimpan konsumsi untuk SELURUH qty baris');
+  });
+
+  it('retur barang make_to_order mengembalikan BAHAN, bukan barang jadi (docs/11 §3)', () => {
+    const susu = mkRaw('Susu S2', { stock: 1000, unit: 'ml' });
+    const latte = mkFinished('Latte S2', { price: 25000, mode: 'make_to_order' });
+    setBom(latte, [[susu, 100, 0]]);
+
+    // dijual saat stok barang jadi NOL -> bahan baku yang dipotong
+    const r = tx(() => createSale({ storeId: S.id, userId: USER, lines: [{ item_id: latte, qty: 1 }] }));
+    assert.equal(stock(susu), 900);
+    assert.equal(stock(latte), 0, 'barang jadi tidak dipotong (stoknya nol)');
+
+    // setelah itu stok barang jadi bertambah (mis. produksi terjadwal)
+    postMovement({ storeId: S.id, itemId: latte, type: 'production_in', qty: 5, unitCost: 5000, refType: 'production', refId: 'uji', reason: 'produksi', userId: USER, allowNegative: true });
+    assert.equal(stock(latte), 5);
+
+    // retur: dulu (tanpa snapshot) rekomputasi melihat stok jadi > 0 -> mengembalikan BARANG JADI.
+    // Sekarang yang dikembalikan adalah apa yang benar-benar terpotong: bahan baku.
+    tx(() => refundLine({ storeId: S.id, txId: r.id, itemId: latte, qty: 1, userId: USER }));
+    assert.equal(stock(susu), 1000, 'bahan baku kembali');
+    assert.equal(stock(latte), 5, 'stok barang jadi TIDAK ikut bertambah');
+  });
+
+  it('data lama tanpa snapshot tetap bisa diretur (fallback hitung ulang)', () => {
+    const raw = mkRaw('Bahan S3', { stock: 500, unit: 'gr' });
+    const item = mkFinished('Produk S3', { price: 8000 });
+    setBom(item, [[raw, 25, 0]]);
+    const r = tx(() => createSale({ storeId: S.id, userId: USER, lines: [{ item_id: item, qty: 2 }] }));
+    assert.equal(stock(raw), 450);
+
+    // baris "lama": snapshot dihapus (meniru data yang dijual sebelum kolom bom_json ada)
+    exec(`UPDATE transaction_items SET bom_json = NULL WHERE transaction_id = ?`, r.id);
+    tx(() => refundLine({ storeId: S.id, txId: r.id, itemId: item, qty: 2, userId: USER }));
+    assert.equal(stock(raw), 500, 'fallback resep saat ini tetap mengembalikan stok');
+    const reason = firstRow(`SELECT reason FROM stock_movements WHERE ref_type='refund' AND ref_id=? AND movement_type='return_in'`, r.id).reason;
+    assert.match(reason, /tanpa snapshot/, 'alasan gerakan menandai retur berbasis hitung ulang');
   });
 
   it('idempotensi: external_ref ganda tidak membuat transaksi & potongan stok dobel', () => {

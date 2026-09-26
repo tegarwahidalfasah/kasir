@@ -280,6 +280,9 @@ CREATE TABLE IF NOT EXISTS transactions (
   fee_total       REAL NOT NULL DEFAULT 0,
   applied_discounts TEXT,                        -- JSON snapshot aturan yang terpakai
   receipt_snapshot  TEXT,                        -- JSON data cetak (kebal dari perubahan setting)
+  -- uang & HPP yang dikembalikan lewat retur sebagian (baris penuh -> status 'refunded')
+  refund_total    REAL NOT NULL DEFAULT 0,
+  refund_cost     REAL NOT NULL DEFAULT 0,
   voided_at       TEXT,
   void_reason     TEXT,
   voided_by       TEXT REFERENCES users(id) ON DELETE SET NULL,
@@ -301,6 +304,12 @@ CREATE TABLE IF NOT EXISTS transaction_items (
   line_total     REAL NOT NULL,
   cost_snapshot  REAL NOT NULL DEFAULT 0,
   addons_json    TEXT,
+  -- snapshot konsumsi barang ini saat dijual: { finished:[{item_id,qty}], raw:[{item_id,qty}] }.
+  -- Retur membalikkan data ini (bukan resep/harga hari ini) — lihat docs/11 §2 & §3.
+  bom_json       TEXT,
+  -- berapa qty baris ini yang SUDAH diretur (pagar agar retur tidak bisa diulang
+  -- tanpa batas -> stok tidak digandakan); kolom aditif, lihat migrateSchema() di db/index.js
+  refunded_qty   REAL NOT NULL DEFAULT 0,
   created_at     TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_txitem_tx   ON transaction_items(transaction_id);

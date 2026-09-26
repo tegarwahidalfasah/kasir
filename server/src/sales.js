@@ -3,11 +3,12 @@
 //  PEMOTONGAN STOK Otomatis (barang jadi + seluruh bahan baku di BOM-nya).
 //  Semuanya dalam SATU transaksi DB: struk tercatat <=> stok terpotong.
 // ===========================================================================
-import { allRows, firstRow, exec, uid, nowIso, round2, loadSetting } from './db/index.js';
+import { allRows, firstRow, exec, uid, nowIso, round2, round6, loadSetting } from './db/index.js';
 import { DEFAULTS } from './config.js';
 import { calculatePrice, bomUnitCost } from './pricing.js';
 import { postMovement, reverseMovements } from './inventory.js';
 import { recipesFor, planStockImpact } from './bom.js';
+import { businessDay, storeTimezone, dayBoundsUtc } from './lib/tz.js';
 import { generateAlerts } from './stockhealth.js';
 import { AppError } from './lib/http.js';
 
@@ -72,8 +73,13 @@ const safeJson = (s, fb) => { try { return s ? JSON.parse(s) : fb; } catch { ret
 export let QUIET_ALERTS = false;
 export const setQuietAlerts = (v) => { QUIET_ALERTS = !!v; };
 
-export function nextInvoiceNo(storeId, prefix = 'INV') {
-  const day = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+/**
+ * Nomor struk berikutnya: `{prefix}{YYYYMMDD}-{nnnn}`, dengan tanggal = HARI BISNIS toko
+ * (docs/11 §4). Dulu memakai tanggal UTC sehingga nomor berganti hari pukul 07:00 WIB —
+ * di tengah jam operasional. `at` bisa diisi untuk pengujian.
+ */
+export function nextInvoiceNo(storeId, prefix = 'INV', at = new Date()) {
+  const day = businessDay(storeTimezone(storeId), at).replace(/-/g, '');
   const base = `${prefix}${day}-`;
   // mulai dari nomor terbesar hari ini (bukan 20 percobaan dari 1000) supaya nomor tetap rapi
   // walau data historis/seed sudah memakai ribuan nomor pertama.
@@ -126,13 +132,33 @@ export function createSale(p) {
     }
   }
 
+  // Tanpa `forceConsumeRaw`: penjualan memakai stok barang jadi lebih dulu bila ada, dan baru
+  // memotong bahan baku untuk sisanya. Flag itu dipakai jalur simulasi (`/items/:id/simulate`)
+  // dan retur data lama — lihat docs/03 §3.
   const plan = planStockImpact({
     lines: p.lines, catalog, recipes,
-    forceConsumeRaw: p.forceConsumeRaw === true,
   });
   if (plan.shortages.length && !taxCfg.allow_negative_stock) {
     const s = plan.shortages[0];
     throw new AppError(409, `Bahan baku untuk ${s.name} tidak cukup — maksimal ${s.max_by_raw} porsi tersisa`, { shortages: plan.shortages });
+  }
+
+  // Snapshot konsumsi per baris: persis apa yang AKAN dipotong plan di bawah (barang jadi
+  // dan/atau bahan baku). Retur memakai ini, sehingga tidak terpengaruh perubahan resep,
+  // harga bahan, atau naiknya stok barang jadi setelah transaksi (docs/11 §2 & §3).
+  const bomByLine = {};
+  const lineSnap = (id) => (bomByLine[id] ||= { finished: [], raw: [] });
+  for (const f of plan.finished) {
+    if (f.deduct_qty > 0) lineSnap(f.line_item_id || f.item_id).finished.push({ item_id: f.item_id, qty: round6(f.deduct_qty) });
+  }
+  for (const r of plan.raw) {
+    for (const m of r.lines) {
+      if (!m.line_item_id || !(m.raw_qty > 0)) continue;
+      const bucket = lineSnap(m.line_item_id).raw;
+      const found = bucket.find((x) => x.item_id === r.item_id);
+      if (found) found.qty = round6(found.qty + m.raw_qty);
+      else bucket.push({ item_id: r.item_id, qty: round6(m.raw_qty) });
+    }
   }
 
   const txId = uid('txn');
@@ -189,10 +215,11 @@ export function createSale(p) {
     exec(
       `INSERT INTO transaction_items
         (id, transaction_id, item_id, name_snapshot, item_type, qty, unit_price, line_discount, line_total,
-         cost_snapshot, addons_json)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+         cost_snapshot, addons_json, bom_json)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
       uid('txi'), txId, line.item_id, line.name_snapshot, line.item_type, line.qty, line.unit_price,
-      line.line_discount, line.line_total, line.cost_snapshot, JSON.stringify(line.addons || [])
+      line.line_discount, line.line_total, line.cost_snapshot, JSON.stringify(line.addons || []),
+      JSON.stringify(bomByLine[line.item_id] || { finished: [], raw: [] })
     );
   }
   if (payment) {
@@ -238,41 +265,119 @@ export function voidSale({ storeId, txId, userId, reason }) {
   const tx = firstRow(`SELECT * FROM transactions WHERE id = ? AND store_id = ?`, txId, storeId);
   if (!tx) throw new AppError(404, 'Transaksi tidak ditemukan');
   if (tx.status !== 'completed') throw new AppError(409, `Transaksi sudah ${tx.status}`);
+  // Pembatalan membalikkan SELURUH potongan asli; bila sebagian sudah diretur (stok sudah
+  // kembali), pembatalan akan mengembalikannya dua kali. Sisanya harus lewat retur.
+  const refundedLines = firstRow(
+    `SELECT COUNT(*) AS n FROM transaction_items WHERE transaction_id = ? AND refunded_qty > 0`, txId)?.n || 0;
+  if (refundedLines) {
+    throw new AppError(409, 'Transaksi sudah memiliki retur — kembalikan sisanya lewat retur, bukan pembatalan');
+  }
   const reversed = reverseMovements({ storeId, refType: 'transaction', refId: txId, reason: reason || 'Pembatalan transaksi', userId });
   exec(`UPDATE transactions SET status='voided', voided_at=?, void_reason=?, voided_by=? WHERE id=?`, nowIso(), reason || null, userId, txId);
   return { id: txId, invoice_no: tx.invoice_no, status: 'voided', movements_reversed: reversed };
 }
 
 /** Retur sebagian: kembalikan qty tertentu per baris (stok finished + bahan baku proporsional). */
+/**
+ * Nilai uang yang dikembalikan untuk `refundQty` pada satu baris.
+ * Proporsional terhadap bagian baris pada tagihan dasar (subtotal - diskon), lalu dikalikan
+ * `grand_total` supaya bagian pajak/biaya layanan/pembulatan ikut kembali sebanding —
+ * sehingga retur penuh atas semua baris mengembalikan tepat sebesar grand_total.
+ * Selalu dibatasi sisa uang struk yang belum diretur.
+ */
+function refundMoney(tx, line, refundQty) {
+  const grand = Number(tx.grand_total) || 0;
+  const base = (Number(tx.subtotal) || 0) - (Number(tx.discount_total) || 0);
+  const frac = line.qty > 0 ? refundQty / line.qty : 0;
+  const share = base > 0 ? (Number(line.line_total) || 0) / base : 1;
+  const sisa = Math.max(0, grand - (Number(tx.refund_total) || 0));
+  return Math.min(Math.round(grand * share * frac), Math.round(sisa));
+}
+
+/**
+ * Retur sebagian satu baris transaksi.
+ *
+ * PAGAR: `transaction_items.refunded_qty` dicatat per baris, sehingga qty yang diretur
+ * tidak bisa melebihi qty terjual dikurangi yang sudah diretur. Sebelum ada kolom ini,
+ * memanggil retur berulang-ulang mengembalikan stok yang sama setiap kali (stok bahan
+ * baku "muncul dari udara" — docs/11 §1) dan uang retur tidak pernah tercatat.
+ */
 export function refundLine({ storeId, txId, itemId, qty, userId, reason }) {
   const tx = firstRow(`SELECT * FROM transactions WHERE id = ? AND store_id = ?`, txId, storeId);
   if (!tx) throw new AppError(404, 'Transaksi tidak ditemukan');
+  if (tx.status === 'voided') throw new AppError(409, 'Transaksi sudah dibatalkan — retur tidak berlaku');
+  if (tx.status === 'open') throw new AppError(409, 'Order masih tertahan — selesaikan atau hapus dulu sebelum retur');
   const line = firstRow(`SELECT * FROM transaction_items WHERE transaction_id = ? AND item_id = ?`, txId, itemId);
   if (!line) throw new AppError(404, 'Barang tidak ada di transaksi ini');
-  const refundQty = Math.min(Number(qty) || 0, line.qty);
+  const refundQty = Number(qty) || 0;
   if (refundQty <= 0) throw new AppError(400, 'Jumlah retur tidak valid');
+  const already = round2(line.refunded_qty || 0);
+  const remaining = round2(line.qty - already);
+  if (remaining <= 0) throw new AppError(409, `"${line.name_snapshot}" sudah diretur penuh (${line.qty})`);
+  if (refundQty > remaining) {
+    throw new AppError(409, `Hanya ${remaining} dari ${line.qty} "${line.name_snapshot}" yang masih bisa diretur`);
+  }
+  const refundAmount = refundMoney(tx, line, refundQty);
+  const refundCost = round2((Number(line.cost_snapshot) || 0) * refundQty);
 
+  // Sumber kebenaran: snapshot konsumsi yang disimpan SAAT transaksi dibuat
+  // (`transaction_items.bom_json`). Sebelumnya retur menghitung ulang memakai resep &
+  // harga hari ini, sehingga perubahan resep (atau naiknya stok barang jadi) membuat
+  // stok yang kembali tidak sama dengan yang terpotong — docs/11 §2 & §3.
+  const snap = safeJson(line.bom_json, null);
+  // snapshot selalu ditulis lengkap (dua array) saat jual -> kehadirannya otoritatif, termasuk
+  // saat isinya kosong (barang non-stok). NULL hanya untuk data lama sebelum kolom ini ada.
+  const fromSnapshot = !!(snap && Array.isArray(snap.finished) && Array.isArray(snap.raw));
+  const f = line.qty > 0 ? refundQty / line.qty : 0;
   const catalog = catalogFor(storeId);
-  const recipes = recipesFor([itemId]);
-  const plan = planStockImpact({ lines: [{ item_id: itemId, qty: refundQty, addons: safeJson(line.addons_json, []) }], catalog, recipes, forceConsumeRaw: true });
+  const plan = fromSnapshot
+    ? {
+      finished: (snap.finished || []).map((x) => ({ item_id: x.item_id, deduct_qty: round6((Number(x.qty) || 0) * f) })),
+      raw: (snap.raw || []).map((x) => ({ item_id: x.item_id, qty: round6((Number(x.qty) || 0) * f) })),
+    }
+    // Data lama (dijual sebelum kolom ini ada) tidak punya snapshot -> hitung ulang dengan
+    // resep saat ini sebagai pendekatan terbaik yang tersedia.
+    : planStockImpact({ lines: [{ item_id: itemId, qty: refundQty, addons: safeJson(line.addons_json, []) }], catalog, recipes: recipesFor([itemId]) });
   const allowNeg = true;
   const moved = [];
-  for (const f of plan.finished) {
-    const m = postMovement({ storeId, itemId: f.item_id, type: 'return_in', qty: f.deduct_qty, unitCost: catalog[f.item_id]?.cost_price, refType: 'refund', refId: txId, reason: reason || 'Retur pelanggan', userId, allowNegative: allowNeg });
-    if (!m.skipped) moved.push({ item_id: f.item_id, qty: f.deduct_qty });
+  for (const x of plan.finished) {
+    const m = postMovement({ storeId, itemId: x.item_id, type: 'return_in', qty: x.deduct_qty, unitCost: catalog[x.item_id]?.cost_price, refType: 'refund', refId: txId, reason: reason || 'Retur pelanggan', userId, allowNegative: allowNeg });
+    if (!m.skipped) moved.push({ item_id: x.item_id, qty: x.deduct_qty });
   }
   for (const r of plan.raw) {
-    const m = postMovement({ storeId, itemId: r.item_id, type: 'return_in', qty: r.qty, unitCost: catalog[r.item_id]?.cost_price, refType: 'refund', refId: txId, reason: `Retur BOM ${line.name_snapshot}`, userId, allowNegative: allowNeg });
+    const m = postMovement({ storeId, itemId: r.item_id, type: 'return_in', qty: r.qty, unitCost: catalog[r.item_id]?.cost_price, refType: 'refund', refId: txId, reason: `${fromSnapshot ? 'Retur BOM ' : 'Retur BOM (tanpa snapshot) '}${line.name_snapshot}`, userId, allowNegative: allowNeg });
     if (!m.skipped) moved.push({ item_id: r.item_id, qty: r.qty });
   }
-  return { id: txId, item: line.name_snapshot, refund_qty: refundQty, movements: moved };
+
+  // catat qty yang sudah diretur (pagar) + uang/HPP yang dikembalikan
+  exec(`UPDATE transaction_items SET refunded_qty = ? WHERE id = ?`, round2(already + refundQty), line.id);
+  exec(`UPDATE transactions SET refund_total = ? , refund_cost = ? WHERE id = ?`,
+    round2((Number(tx.refund_total) || 0) + refundAmount), round2((Number(tx.refund_cost) || 0) + refundCost), txId);
+
+  // baris penuh -> status 'refunded'; sebagian tetap 'completed' + refund_total > 0
+  const left = allRows(`SELECT qty, refunded_qty FROM transaction_items WHERE transaction_id = ?`, txId)
+    .filter((l) => round2(l.qty - l.refunded_qty) > 0).length;
+  const fullyRefunded = left === 0;
+  if (fullyRefunded) exec(`UPDATE transactions SET status = 'refunded' WHERE id = ? AND status = 'completed'`, txId);
+
+  return {
+    id: txId, item: line.name_snapshot, refund_qty: refundQty,
+    refund_amount: refundAmount, remaining_qty: round2(remaining - refundQty),
+    fully_refunded: fullyRefunded, status: fullyRefunded ? 'refunded' : tx.status,
+    movements: moved,
+  };
 }
 
-export function listSales(storeId, { from, to, limit = 100, offset = 0, status, cashierId } = {}) {
+const PLAIN_DAY = /^\d{4}-\d{2}-\d{2}$/;
+/** Tanggal polos ('2026-09-27') dari UI = hari bisnis TOKO, bukan hari UTC (docs/11 §4). */
+const dayBoundary = (value, timezone, end) => (PLAIN_DAY.test(value) ? dayBoundsUtc(value, timezone, end) : value);
+
+export function listSales(storeId, { from, to, limit = 100, offset = 0, status, cashierId, timezone } = {}) {
+  const tz = timezone || storeTimezone(storeId);
   const where = ['t.store_id = ?'];
   const params = [storeId];
-  if (from) { where.push('t.created_at >= ?'); params.push(from); }
-  if (to) { where.push('t.created_at <= ?'); params.push(to + ' 23:59:59'); }
+  if (from) { where.push('t.created_at >= ?'); params.push(dayBoundary(from, tz, false)); }
+  if (to) { where.push('t.created_at <= ?'); params.push(dayBoundary(to, tz, true)); }
   if (status) { where.push('t.status = ?'); params.push(status); }
   if (cashierId) { where.push('t.cashier_id = ?'); params.push(cashierId); }
   const rows = allRows(
@@ -297,7 +402,15 @@ export function getSale(storeId, txId) {
      LEFT JOIN payment_methods pm ON pm.id = t.payment_method_id
      WHERE t.id = ? AND t.store_id = ?`, txId, storeId);
   if (!tx) throw new AppError(404, 'Transaksi tidak ditemukan');
-  const items = allRows(`SELECT * FROM transaction_items WHERE transaction_id = ? ORDER BY rowid ASC`, txId);
+  const items = allRows(`SELECT * FROM transaction_items WHERE transaction_id = ? ORDER BY rowid ASC`, txId).map((i) => {
+    const { bom_json, ...rest } = i;
+    return {
+      ...rest,
+      // jejak audit: apa yang BENAR-BENAR dipotong untuk baris ini saat transaksi dibuat
+      // (dipakai retur; null untuk data lama yang dijual sebelum kolom ini ada)
+      bom: safeJson(bom_json, null),
+    };
+  });
   const payments = allRows(
     `SELECT p.*, pm.name FROM transaction_payments p LEFT JOIN payment_methods pm ON pm.id = p.payment_method_id WHERE p.transaction_id = ?`, txId);
   const movements = allRows(`SELECT * FROM stock_movements WHERE ref_id = ? AND ref_type IN ('transaction','refund') ORDER BY created_at ASC`, txId);

@@ -1,0 +1,23 @@
+# Kesepakatan dasar editor — mencegah diff "hanya spasi" di PR.
+# Gaya kode proyek: 2 spasi, tanpa titik koma di akhir baris hanya bila sudah konsisten
+# (lihat kode yang ada; format mengikuti berkas sekitar, bukan prettier otomatis).
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+max_line_length = 140
+
+[*.md]
+# dokumen sering memakai spasi ganda di akhir baris sebagai pemisah baris
+trim_trailing_whitespace = false
+
+[*.{sql,sh}]
+indent_size = 2
+
+[Makefile]
+indent_style = tab

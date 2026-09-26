@@ -67,7 +67,11 @@ export default function SalesHistory() {
             { key: 'order_type', label: 'Tipe', render: (r) => <span className="muted">{ORDER[r.order_type] || r.order_type}</span> },
             { key: 'payment_name', label: 'Bayar', render: (r) => r.payment_name || <span className="muted">—</span> },
             { key: 'discount_total', label: 'Diskon', align: 'right', render: (r) => (r.discount_total ? <span style={{ color: 'var(--danger)' }} className="num">-{money(r.discount_total)}</span> : <span className="muted">—</span>) },
-            { key: 'grand_total', label: 'Total', align: 'right', render: (r) => <b className="num">{money(r.grand_total)}</b> },
+            { key: 'grand_total', label: 'Total', align: 'right', render: (r) => (
+              <div>
+                <b className="num">{money(r.grand_total)}</b>
+                {r.refund_total > 0 && <div className="muted" style={{ fontSize: 11.5 }}>retur −{money(r.refund_total)}</div>}
+              </div>) },
             { key: 'act', label: '', align: 'right', render: (r) => (
               <div className="row" style={{ gap: 4, justifyContent: 'flex-end' }}>
                 <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); setDetail(r.id); }}>Struk</Button>
@@ -88,6 +92,8 @@ export default function SalesHistory() {
 }
 
 const ORDER = { dine_in: 'Di tempat', take_away: 'Bawa pulang', delivery: 'Kirim', online: 'Online' };
+/** Sisa qty yang masih boleh diretur pada satu baris (qty terjual - yang sudah diretur). */
+const sisa = (i) => Math.max(0, Math.round((((i?.qty || 0) - (i?.refunded_qty || 0))) * 100) / 100);
 const uniq = (pairs) => { const m = new Map(); pairs.forEach(([n, i]) => { if (i) m.set(i, n || i); }); return [...m.entries()].map(([value, label]) => ({ value, label })); };
 
 function ReceiptModal({ id, onClose }) {
@@ -136,6 +142,12 @@ function ReceiptModal({ id, onClose }) {
             </details>
           )}
           {sale.voided_at && <div className="hint-box" style={{ marginTop: 8 }}>Dibatalkan {dateTime(sale.voided_at)} — {sale.void_reason || 'tanpa alasan'}</div>}
+          {sale.refund_total > 0 && (
+            <div className="hint-box" style={{ marginTop: 8 }}>
+              Retur: {money(sale.refund_total)} dikembalikan ke pelanggan
+              {sale.status === 'refunded' ? ' — seluruh baris sudah diretur penuh' : ' — baris lain masih bisa diretur sebagian'}
+            </div>
+          )}
         </>
       )}
     </Modal>
@@ -172,26 +184,48 @@ function RefundModal({ row, onClose, onDone }) {
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     if (!row) { setItems(null); return; }
-    get(`/sales/${row.id}`).then((s) => { setItems(s.items || []); setPick((s.items || [])[0]?.item_id || ''); }).catch(() => setItems([]));
+    get(`/sales/${row.id}`).then((s) => {
+      const all = s.items || [];
+      setItems(all);
+      setPick(all.find((i) => sisa(i) > 0)?.item_id || '');
+    }).catch(() => setItems([]));
   }, [row]);
   if (!row) return null;
   const line = (items || []).find((i) => i.item_id === pick);
+  const remaining = line ? sisa(line) : 0;
+  const habis = (items || []).length > 0 && !(items || []).some((i) => sisa(i) > 0);
   return (
     <Modal open onClose={onClose} width="440px" title={`Retur sebagian — ${row.invoice_no}`}
       footer={<><Button onClick={onClose}>Batal</Button>
-        <Button variant="primary" loading={busy} disabled={!pick} onClick={async () => {
+        <Button variant="primary" loading={busy} disabled={!pick || habis || remaining <= 0} onClick={async () => {
           setBusy(true);
-          try { await post(`/sales/${row.id}/refund`, { item_id: pick, qty: Number(qty) || 1, reason: reason || 'retur' }); app.toast('Retur dicatat, stok kembali', 'success'); onDone(); }
-          catch (e) { app.toast(e.message, 'error'); } finally { setBusy(false); }
+          try {
+            const out = await post(`/sales/${row.id}/refund`, { item_id: pick, qty: Number(qty) || 1, reason: reason || 'retur' });
+            app.toast(out?.fully_refunded ? 'Retur penuh dicatat, stok kembali' : 'Retur dicatat, stok kembali', 'success');
+            onDone();
+          } catch (e) { app.toast(e.message, 'error'); } finally { setBusy(false); }
         }}>Catat retur</Button></>}>
-      {!items ? <Loading /> : (
+      {!items ? <Loading /> : habis ? (
+        <p className="muted" style={{ fontSize: 13, marginBottom: 0 }}>
+          Semua baris pada struk ini sudah diretur penuh — tidak ada sisa yang bisa diretur.
+        </p>
+      ) : (
         <div className="col">
-          <Field label="Barang yang diretur"><Select value={pick} onChange={setPick} options={(items || []).map((i) => ({ value: i.item_id, label: `${i.name_snapshot} (${fmtQty(i.qty, 1)} terjual)` }))} /></Field>
+          <Field label="Barang yang diretur">
+            <Select value={pick} onChange={setPick} options={(items || []).map((i) => ({
+              value: i.item_id,
+              label: `${i.name_snapshot} (terjual ${fmtQty(i.qty, 1)}${sisa(i) < i.qty ? `, sisa ${fmtQty(sisa(i), 1)}` : ''})`,
+              disabled: sisa(i) <= 0,
+            }))} />
+          </Field>
           <div className="grid grid-2">
-            <Field label={`Jumlah (maks ${line ? fmtQty(line.qty, 1) : 0})`}><NumberInput value={qty} min={0.001} step="any" onChange={setQty} className="input" /></Field>
+            <Field label={`Jumlah (maks ${fmtQty(remaining, 1)})`}><NumberInput value={qty} min={0.001} max={remaining} step="any" onChange={setQty} className="input" /></Field>
             <Field label="Alasan"><Input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="rusak / tidak sesuai" /></Field>
           </div>
-          <small className="muted">Retur mengembalikan stok sesuai porsi bahan di BOM saat transaksi dibuat (menggunakan snapshot, bukan harga/resep hari ini).</small>
+          <small className="muted">
+            Retur mengembalikan stok sesuai porsi bahan di BOM saat transaksi dibuat (menggunakan snapshot, bukan harga/resep hari ini).
+            Bila sebagian sudah diretur, hanya sisanya yang dapat diretur lagi.
+          </small>
         </div>
       )}
     </Modal>

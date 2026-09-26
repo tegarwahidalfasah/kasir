@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/index.js';
 import { router as authRouter } from './auth.js';
+import { router as eventsRouter } from './events.js';
 import { router as posRouter } from './pos.js';
 import { router as stockRouter } from './stock.js';
 import { router as itemsRouter } from './items.js';
@@ -17,6 +18,7 @@ export const api = Router();
 api.use(authenticate);
 
 api.use(itemsRouter);
+api.use(eventsRouter);   // SSE /api/events (tanpa parser JSON, respons stream)
 api.use(stockRouter);
 api.use(usersRouter);
 api.use(reportsRouter);

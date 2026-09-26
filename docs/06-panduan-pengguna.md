@@ -67,7 +67,7 @@ Sistem mencatat: peringatan baru dibuat otomatis tiap transaksi & penerimaan bar
 ## 3. Manajer / pemilik — pengawasan (`report.view`, `setting.*`)
 
 * **Dasbor**: penjualan hari ini, tren, bahan menipis, transaksi terakhir, pintasan `Laporan lengkap →` dan `Buka pusat peringatan →`.
-* **Laporan**: tab Penjualan / Pergerakan stok / Pemakaian bahan / Valuasi persediaan; rentang tanggal (default 30 hari);
+* **Laporan**: tab Penjualan / Pergerakan stok / Pemakaian bahan / Valuasi persediaan; rentang tanggal (default 30 hari *bisnis toko* sesuai zona waktu di Profil toko);
   unduh **⬇ CSV** memakai hak `report.export`. Perkiraan kehabisan memakai jendela pemakaian 14 hari
   (`tax.consumption_window_days`) — minggu pertama datanya masih tipis, jangan buru-buru menyalah angkanya.
 * **Riwayat transaksi** (`/sales`): filter status/tanggal/kasir, pencarian, detail struk, cetak ulang, batalkan, retur.
