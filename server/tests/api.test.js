@@ -168,6 +168,45 @@ describe('api', () => {
     }
   });
 
+  it('retur lewat API berpagar: 409 saat melebihi sisa, uang tercatat, laporan neto, void ditolak', async () => {
+    // setup deterministik (pajak/pembulatan sudah dinetralkan tes sebelumnya)
+    const raw = await must('/items', { method: 'POST', body: { name: 'Bahan Retur API', item_type: 'raw', unit: 'gr', cost_price: 500, opening_stock: 1000 } });
+    const fin = await must('/items', { method: 'POST', body: { name: 'Kopi Retur API', item_type: 'finished', selling_price: 10000, production_mode: 'make_to_order', tax_mode: 'exempt' } });
+    await must(`/items/${fin.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: raw.id, qty: 10 }] } });
+
+    const before = (await must('/reports/summary')).totals;
+    const sale = await must('/sales', { method: 'POST', body: { lines: [{ item_id: fin.id, qty: 2 }] } });
+    assert.equal(sale.grand_total, 20000, '2 x 10.000 tanpa pajak');
+
+    // retur sebagian: 1 dari 2
+    const r1 = await must(`/sales/${sale.id}/refund`, { method: 'POST', body: { item_id: fin.id, qty: 1, reason: 'uji retur' } });
+    assert.equal(r1.refund_amount, 10000, 'uang retur proporsional');
+    assert.equal(r1.remaining_qty, 1);
+    assert.equal(r1.fully_refunded, false);
+
+    // melebihi sisa -> 409 (inti pagar: sebelumnya selalu 200 dan stok digandakan)
+    const r2 = await req(`/sales/${sale.id}/refund`, { method: 'POST', body: { item_id: fin.id, qty: 2, reason: 'uji retur' } });
+    assert.equal(r2.status, 409, 'retur melebihi sisa harus 409: ' + JSON.stringify(r2.data));
+
+    const mid = (await must('/reports/summary')).totals;
+    assert.equal(mid.gross_revenue - before.gross_revenue, 10000, 'omzet menghitung penjualan neto setelah retur sebagian');
+    assert.equal(mid.refund_total - before.refund_total, 10000, 'totals.refund_total tersedia untuk dasbor');
+
+    // sisa 1 -> penuh
+    const r3 = await must(`/sales/${sale.id}/refund`, { method: 'POST', body: { item_id: fin.id, qty: 1, reason: 'uji retur' } });
+    assert.equal(r3.fully_refunded, true);
+    const det = await must(`/sales/${sale.id}`);
+    assert.equal(det.status, 'refunded', 'semua baris penuh -> status refunded');
+    assert.equal(det.items.find((i) => i.item_id === fin.id).refunded_qty, 2, 'refunded_qty tersimpan per baris');
+
+    // setelah itu: retur lagi & pembatalan sama-sama ditolak
+    assert.equal((await req(`/sales/${sale.id}/refund`, { method: 'POST', body: { item_id: fin.id, qty: 1, reason: 'uji' } })).status, 409);
+    const voidTry = await req(`/sales/${sale.id}/void`, { method: 'POST', body: { reason: 'uji' } });
+    assert.equal(voidTry.status, 409, 'void setelah retur ditolak agar stok tidak kembali dua kali');
+    const after = (await must('/reports/summary')).totals;
+    assert.equal(after.refunded - before.refunded, 1, 'struk yang diretur penuh dihitung sebagai refunded');
+  });
+
   it('kasir dibloki mengubah setting/pajak/user (RBAC), manajer boleh', async () => {
     const denied = await req('/settings/tax', { method: 'PUT', as: 'cashier', body: { default_rate_pct: 0 } });
     assert.equal(denied.status, 403, 'kasir tidak boleh ubah pajak');

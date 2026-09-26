@@ -42,6 +42,37 @@ if (schema) {
   db.exec(schema);
 }
 
+// ---------------------------------------------------------------- migrasi aditif
+// Skema di schema.sql bersifat idempoten (CREATE ... IF NOT EXISTS), tetapi itu TIDAK
+// mengubah tabel yang sudah ada — menambah kolom baru hanya berpengaruh pada DB baru.
+// Kolom baru karena itu didaftarkan di sini: dipastikan ada saat boot, sehingga DB
+// produksi yang sudah berisi data ikut ter-upgrade tanpa alat migrasi terpisah.
+// Sengaja hanya operasi aditif (ADD COLUMN) yang aman & idempoten; belum ada versi
+// bernomor, rollback, atau perubahan yang membangun ulang tabel (mis. mengubah CHECK).
+const ADDITIVE_COLUMNS = [
+  ['transaction_items', 'refunded_qty', 'REAL NOT NULL DEFAULT 0'],
+  ['transactions', 'refund_total', 'REAL NOT NULL DEFAULT 0'],
+  ['transactions', 'refund_cost', 'REAL NOT NULL DEFAULT 0'],
+];
+
+/** Tambahkan kolom yang belum ada; mengembalikan daftar "tabel.kolom" yang baru dibuat. */
+export function migrateSchema() {
+  const applied = [];
+  for (const [table, column, ddl] of ADDITIVE_COLUMNS) {
+    let info = [];
+    try { info = db.prepare(`PRAGMA table_info(${table})`).all(); } catch { /* tabel belum ada */ }
+    if (!info.length || info.some((c) => c.name === column)) continue;
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+    applied.push(`${table}.${column}`);
+  }
+  return applied;
+}
+
+const appliedMigrations = migrateSchema();
+if (appliedMigrations.length) {
+  console.log(`[db] migrasi aditif diterapkan: ${appliedMigrations.join(', ')}`);
+}
+
 export const DB_FILE = DB_PATH;
 
 /** Jalankan `fn()` di dalam transaksi SQLite (atomic + rollback saat error). */

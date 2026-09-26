@@ -4,8 +4,8 @@ Tiga lapisan pengujian, semuanya jalan tanpa dependency tambahan dan **tanpa men
 (masing-masing membuat `KASIR_DATA_DIR` sementara sendiri).
 
 ```bash
-npm test          # unit + integrasi: 57 tes (pricing 16 · stok/BOM 14 · API 27) · ±5 s
-npm run test:ui   # smoke UI (jsdom + React nyata) 28 pemeriksaan · ±27 s
+npm test          # unit + integrasi: 61 tes (pricing 16 · stok/BOM 17 · API 28) · ±5 s
+npm run test:ui   # smoke UI (jsdom + React nyata) 32 pemeriksaan · ±27 s
 npm run test:qa   # QA transaksi massal: 20 pemeriksaan · ±10 s (400 struk)
 npm run check     # npm test + test:ui + build client
 ```
@@ -117,7 +117,8 @@ Selain tiga lapisan di atas, `docs/08` versi ini dihasilkan setelah menjalankan 
 ## 3. Smoke UI (render, alur, tema, struk)
 
 Harness: `client/tests/ui-smoke.mjs` (menyalakan seed + API sementara, membundel dengan esbuild) →
-`client/tests/ui-smoke.entry.jsx` (assertion di jsdom) → `client/tests/env.js` (jsdom + stub). 28 pemeriksaan:
+`client/tests/ui-smoke.entry.jsx` (assertion di jsdom) → `client/tests/env.js` (jsdom + stub). 32 pemeriksaan
+(28 pada putaran pertama–ketiga, **+4 pada putaran keempat**: form login – klik "Masuk" harus submit):
 
 * **Render** — 11 tampilan tanpa error JS memakai data asli server (contoh jumlah elemen pada satu kali jalan):
   shell App 159 · Kasir 105 · Stok 578 · Barang & bahan 251 · Pembelian 71 · Dasbor 353 · Laporan 246 ·
@@ -155,7 +156,19 @@ bertanggal "masa depan" mendorong gerakan struk baru ke peringkat 68 di `ORDER B
 Hasil setelah perbaikan: `npm test` **57/57**, `npm run test:ui` **28/28** (exit 0),
 `npm run test:qa` **20/20**, `npm run build` sukses → `npm run check` hijau.
 
-## 4. Cara menjalankan & menafsirkan
+## 4. Putaran keempat — pagar retur (26 Sep 2026)
+
+Temuan P0 #1 [`docs/11`](11-analisis-2026-09-17.md) diperbaiki: retur tidak lagi bisa diulang untuk
+menggandakan stok. Diverifikasi dua lapis:
+
+| Lapisan | Bukti |
+|---|---|
+| Tes regresi (**+4**, 57 → **61**) | 3 di `stock.test.js`: `retur berulang DITOLAK: sisa qty dijaga` · `retur sebagian mencatat uang proporsional` · `transaksi yang sudah diretur tidak boleh DIBATALKAN`; 1 di `api.test.js`: `retur lewat API berpagar` (409, uang, laporan neto, void ditolak). Tiga tes domain dijalankan terhadap kode `sales.js` versi lama → **3 failing** (14 passing); dengan perbaikan → 17 passing |
+| Verifikasi HTTP di server nyata | Struk `KS20260926-1330` (qty 2): retur ke-1 `200` (uang 38.850, status → `refunded`), retur ke-2 & ke-3 `409 "… sudah diretur penuh"`; delta stok setelah penolakan = **0** untuk keenam bahan; omzet laporan turun tepat 38.850; `void` setelah retur → `409`, stok tidak berubah |
+| Retur sebagian | Struk `KS20260926-1319` (baris qty 2): retur 1 → `refund_amount` 22.193, status tetap `completed`, `refunded_qty=1`; omzet laporan Δ −22.193 (persis uang retur), qty barang −1, HPP ikut turun |
+| Migrasi DB lama | DB berskema lama (tanpa kolom baru) dibuka aplikasi → `[db] migrasi aditif diterapkan: transaction_items.refunded_qty, transactions.refund_total, transactions.refund_cost`; `refund_total=0` pada data lama, transaksi lama utuh |
+
+## 5. Cara menjalankan & menafsirkan
 
 ```bash
 cd /home/user/kasir
@@ -174,7 +187,7 @@ Keluaran yang menunjukkan masalah:
 | smoke UI “Cannot find package 'jsdom'” | devDependency belum terpasang | `npm i` di root (`jsdom` + `esbuild` ada di `devDependencies`) |
 | smoke UI “Build failed … Unexpected \"catch\"” | sintaks JSX | perbaiki berkas; runner sengaja tidak membungkam error esbuild |
 
-## 5. Rencana pengujian lanjutan (sebelum v1.0)
+## 6. Rencana pengujian lanjutan (sebelum v1.0)
 
 1. **Uji properti acak untuk `pricing.js`** (diskon non-stackable, batas `max_discount`, pembulatan) — 500 kasus acak
    dibandingkan implementasi reference; saat ini 16 kasus tangan.

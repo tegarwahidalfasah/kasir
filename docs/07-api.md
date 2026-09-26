@@ -26,8 +26,8 @@ Batas body JSON 12 MB. Nomor versi & jumlah baris tersedia di `GET /api/health`.
 | POST | `/sales` | `sale.create` | buat transaksi (body di §contoh); `external_ref` ganda → struk lama + `duplicated: true` (HTTP 200); `skip_alerts: true` menunda pindai peringatan |
 | GET | `/sales` | — | `?page=&limit=&from=&to=&status=&cashier_id=` · limit ≤ 200 · tanpa `receipt_snapshot` |
 | GET | `/sales/:id` | — | detail + `items[], movements[], payments[], snapshot` |
-| POST | `/sales/:id/void` | `sale.void` | `{reason}` → semua stok kembali |
-| POST | `/sales/:id/refund` | `sale.void` | `{item_id, qty, reason}` retur sebagian proporsional |
+| POST | `/sales/:id/void` | `sale.void` | `{reason}` → semua stok kembali. `409` bila status bukan `completed` **atau** transaksi sudah punya retur (stok akan kembali dua kali) |
+| POST | `/sales/:id/refund` | `sale.void` | `{item_id, qty, reason}` retur sebagian proporsional. Berpagar per baris: `409` bila qty melebihi sisa (`qty − refunded_qty`) atau baris sudah diretur penuh. Respons: `{id, item, refund_qty, refund_amount, remaining_qty, fully_refunded, status, movements[]}` |
 | GET | `/pos/held` | `sale.hold` | order `status='open'` (maks 50) |
 | POST | `/pos/hold` | `sale.hold` | `{lines, customer_name}` → `{id, invoice_no:'HHMMSS'}` |
 | GET / DELETE | `/pos/hold/:id` | `sale.hold` | baca / buang order tertahan |
@@ -141,5 +141,6 @@ curl -s "localhost:4000/api/reports/raw-usage?from=2026-09-01&to=2026-09-16" -H 
    (`{...sekarang, ...body}`), tetapi objek/array bersarang (mis. `receipt.show`, `theme.menu`) **diganti seluruhnya** —
    kirim objek lengkap bila tidak mau kehilangan sakelar lain. Setelah menyimpan, klien lain perlu `app.refresh()`
    supaya tema/struk baru terbaca.
-5. Semua harga integer Rupiah; qty boleh desimal (gram/ml). Jangan kirim `unit_price` untuk memakai harga master —
+5. **Retur tidak bisa diulang.** `transaction_items.refunded_qty` adalah sumber kebenaran sisa yang boleh diretur; setelah baris penuh, status struk menjadi `refunded` dan permintaan retur berikutnya dijawab `409`. Retur juga mencatat uang (`refund_total`) dan HPP (`refund_cost`) sehingga laporan tidak lagi menghitung barang yang sudah kembali sebagai penjualan.
+6. Semua harga integer Rupiah; qty boleh desimal (gram/ml). Jangan kirim `unit_price` untuk memakai harga master —
    kirim tanpa field itu agar server memakai katalog.

@@ -132,6 +132,81 @@ describe('stok & BOM', () => {
     assert.equal(stock(biji), 970, 'retur 2 porsi -> biji kembali 20gr');
   });
 
+  it('retur berulang DITOLAK: sisa qty dijaga, stok tidak boleh digandakan', () => {
+    const biji = mkRaw('Biji R1', { stock: 1000 });
+    const k = mkFinished('Kopi R1', { price: 10000 });
+    setBom(k, [[biji, 10, 0]]);
+    const r = tx(() => createSale({ storeId: S.id, userId: USER, lines: [{ item_id: k, qty: 4 }] }));
+    assert.equal(stock(biji), 960, 'jual 4 porsi -> 40gr terpakai');
+
+    // retur 3 dari 4 porsi: boleh
+    tx(() => refundLine({ storeId: S.id, txId: r.id, itemId: k, qty: 3, userId: USER }));
+    assert.equal(stock(biji), 990);
+    let line = firstRow(`SELECT refunded_qty FROM transaction_items WHERE transaction_id = ?`, r.id);
+    assert.equal(line.refunded_qty, 3, 'refunded_qty tercatat per baris');
+
+    // percobaan kedua melebihi sisa (3 diminta, sisa 1) -> 409 & stok TIDAK berubah
+    const before = stock(biji);
+    assert.throws(
+      () => tx(() => refundLine({ storeId: S.id, txId: r.id, itemId: k, qty: 3, userId: USER })),
+      (e) => e.status === 409 && /masih bisa diretur/.test(e.message),
+      'minta 3 padahal sisa 1 harus 409'
+    );
+    assert.equal(stock(biji), before, 'retur yang ditolak tidak mengubah stok sama sekali');
+    assert.equal(firstRow(`SELECT refunded_qty FROM transaction_items WHERE transaction_id = ?`, r.id).refunded_qty, 3);
+
+    // retur sisa 1 porsi -> baris penuh, transaksi jadi 'refunded'
+    tx(() => refundLine({ storeId: S.id, txId: r.id, itemId: k, qty: 1, userId: USER }));
+    assert.equal(stock(biji), 1000, 'seluruh bahan kembali setelah retur penuh');
+    const txRow = firstRow(`SELECT status, refund_total FROM transactions WHERE id = ?`, r.id);
+    assert.equal(txRow.status, 'refunded', 'baris penuh -> status refunded');
+    assert.equal(txRow.refund_total, 40000, 'uang retur penuh = grand_total');
+
+    // retur keempat: baris sudah habis -> 409 dan tetap tidak mengubah stok
+    assert.throws(
+      () => tx(() => refundLine({ storeId: S.id, txId: r.id, itemId: k, qty: 1, userId: USER })),
+      (e) => e.status === 409 && /sudah diretur penuh/.test(e.message)
+    );
+    assert.equal(stock(biji), 1000, 'stok tetap utuh (tidak digandakan)');
+    assert.equal(firstRow(`SELECT COUNT(*) n FROM stock_movements WHERE ref_type='refund' AND ref_id=?`, r.id).n,
+      1 + 1, 'hanya dua retur sah yang menulis gerakan (3 + 1)');
+  });
+
+  it('retur sebagian mencatat uang proporsional & mengurangi omzet (bukan grand_total penuh)', () => {
+    const gula = mkRaw('Gula R2', { stock: 1000, unit: 'ml' });
+    const k = mkFinished('Teh R2', { price: 15000 });
+    setBom(k, [[gula, 20, 0]]);
+    const r = tx(() => createSale({ storeId: S.id, userId: USER, lines: [{ item_id: k, qty: 2 }] }));
+    assert.equal(firstRow(`SELECT grand_total FROM transactions WHERE id = ?`, r.id).grand_total, 30000);
+
+    const out = tx(() => refundLine({ storeId: S.id, txId: r.id, itemId: k, qty: 1, userId: USER }));
+    assert.equal(out.refund_amount, 15000, 'setengah tagihan dikembalikan');
+    assert.equal(out.remaining_qty, 1);
+    assert.equal(out.fully_refunded, false);
+    const row = firstRow(`SELECT status, refund_total, refund_cost FROM transactions WHERE id = ?`, r.id);
+    assert.equal(row.status, 'completed', 'retur sebagian belum mengubah status transaksi');
+    assert.equal(row.refund_total, 15000);
+    assert.ok(row.refund_cost > 0, 'HPP barang yang kembali ikut dicatat');
+    assert.equal(stock(gula), 980, 'bahan 1 porsi kembali');
+  });
+
+  it('transaksi yang sudah diretur tidak boleh DIBATALKAN (stok akan kembali dua kali)', () => {
+    const susu = mkRaw('Susu R3', { stock: 500, unit: 'ml' });
+    const k = mkFinished('Latte R3', { price: 20000 });
+    setBom(k, [[susu, 50, 0]]);
+    const r = tx(() => createSale({ storeId: S.id, userId: USER, lines: [{ item_id: k, qty: 2 }] }));
+    tx(() => refundLine({ storeId: S.id, txId: r.id, itemId: k, qty: 1, userId: USER }));
+    assert.equal(stock(susu), 450, 'jual 2 (100ml) lalu retur 1 (50ml)');
+
+    assert.throws(
+      () => tx(() => voidSale({ storeId: S.id, txId: r.id, userId: USER })),
+      (e) => e.status === 409 && /lewat retur, bukan pembatalan/.test(e.message),
+      'void setelah retur harus ditolak'
+    );
+    assert.equal(stock(susu), 450, 'stok tidak berubah oleh pembatalan yang ditolak');
+    assert.equal(firstRow(`SELECT status FROM transactions WHERE id = ?`, r.id).status, 'completed');
+  });
+
   it('idempotensi: external_ref ganda tidak membuat transaksi & potongan stok dobel', () => {
     const biji = mkRaw('Biji G', { stock: 1000 });
     const k = mkFinished('Kopi G', { price: 9000 });

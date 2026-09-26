@@ -24,9 +24,9 @@ selama **4 minggu**, dengan 1 pendampingan per toko. Keluaran yang diharapkan: k
 
 Sudah terpenuhi per 16 Sep 2026 (lihat [08-qa-simulasi.md](08-qa-simulasi.md)):
 
-- [x] 57 unit/integrasi backend hijau (`npm test`), termasuk uji isolasi antar toko, race 120 request, alur order tertahan & pembatas login.
+- [x] 61 unit/integrasi backend hijau (`npm test`), termasuk uji isolasi antar toko, race 120 request, alur order tertahan, pembatas login, dan pagar retur (retur tidak bisa diulang).
 - [x] 20/20 QA transaksi massal hijau — 400/400 struk, selisih BOM 0.0000, void mengembalikan seluruh stok, idempoten, tidak ada kebocoran kolom rahasia.
-- [x] 28 smoke UI hijau — 11 tampilan, alur bayar ↔ ledger ↔ stok, tema tersimpan, struk tidak meluber di 4 lebar kertas.
+- [x] 32 smoke UI hijau — 11 tampilan, alur login, alur bayar ↔ ledger ↔ stok, tema tersimpan, struk tidak meluber di 4 lebar kertas.
 - [x] Alat cadangan/pemulihan tersedia (`npm run backup`, `npm run maintenance -- status|verify|restore|prune|vacuum|health`).
 
 Belum (harus selesai sebelum undangan dikirim):
@@ -40,7 +40,7 @@ Belum (harus selesai sebelum undangan dikirim):
 
 ### Risiko teknis yang diketahui (per 26 Sep 2026)
 
-Ditemukan saat penelusuran kode setelah rilis 0.1.0. Belum diperbaiki karena masing-masing
+Ditemukan saat penelusuran kode setelah rilis 0.1.0 (temuan urutan pertama — **retur berulang tanpa batas** — sudah diperbaiki, lihat [11](11-analisis-2026-09-17.md) §1 dan CHANGELOG). Belum diperbaiki karena masing-masing
 menyentuh data/format yang sudah dipakai — perlu keputusan pemilik sebelum diubah:
 
 - **Zona waktu toko belum diterapkan pada perhitungan tanggal.** `stores.timezone` disimpan & dapat
@@ -50,10 +50,11 @@ menyentuh data/format yang sudah dipakai — perlu keputusan pemilik sebelum diu
   `'localtime'` (zona waktu **server**, bukan toko). Akibatnya pada server ber-TZ UTC, transaksi
   pukul 00:00–07:00 WIB masuk ke tanggal sebelumnya — tepat pada jam tutup/buka toko.
   Uji manual: transaksi 27 Sep 00:30 WIB tampil sebagai 26 Sep dan berprefiks `KS20260926-`.
-- **Belum ada migrasi skema bertahap.** `schema.sql` bersifat idempoten (`CREATE … IF NOT EXISTS`)
-  dan `PRAGMA user_version` belum dipakai, jadi penambahan kolom pada v0.2 **tidak** mengubah DB
-  produksi yang sudah berisi data; kode baru akan gagal dengan `no such column`. Perlu langkah
-  `ALTER TABLE` bernomor versi sebelum upgrade toko pertama.
+- **Migrasi skema masih satu arah (aditif).** `schema.sql` idempoten + `migrateSchema()` sekarang
+  menambahkan kolom baru secara otomatis ke DB lama (dipakai `transaction_items.refunded_qty`,
+  `transactions.refund_total`, `refund_cost`; diuji dengan DB berskema lama — data lama tetap utuh).
+  Yang belum ada: migrasi bernomor versi (`PRAGMA user_version`), rollback, backfill data, dan
+  perubahan yang membangun ulang tabel (mis. menambah nilai baru pada CHECK `transactions.status`).
 - **Kolom uang bertipe `REAL`, bukan `INTEGER` sen.** Nilai dibulatkan ke Rupiah penuh
   (`Math.round`) sehingga data seed masih bersih (dicek: `SUM(grand_total)` = bilangan bulat),
   tetapi secara akuntansi tipe ini menyimpan risiko pembulatan jangka panjang.

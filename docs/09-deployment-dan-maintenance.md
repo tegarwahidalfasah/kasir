@@ -103,7 +103,7 @@ Bila `ops/kasir.service` tidak dipakai, jalankan minimal dengan:
 | **Bulanan 1-nya 04:00** | **latih pemulihan** ke pangkalan sementara | lihat §6 langkah 4 |
 | **Bulanan** | cek kapasitas disk & ukuran DB | `ops/maintenance.sh status` (menampilkan “ledger vs stok” + cadangan terakhir) |
 | **Triwulanan** | audit hak akses | `GET /api/users`, `GET /api/roles`; cabut yang tidak dipakai; ganti kata sandi |
-| **Sebelum rilis** | `npm run check && npm run test:qa` | 57 unit/integrasi + 28 smoke UI + 20 QA harus hijau (CI: `.github/workflows/ci.yml`) |
+| **Sebelum rilis** | `npm run check && npm run test:qa` | 61 unit/integrasi + 32 smoke UI + 20 QA harus hijau (CI: `.github/workflows/ci.yml`) |
 
 `ops/maintenance.sh` adalah pembungkus tipis (kunci `flock` + log + notifikasi) di atas skrip
 `server/scripts/{backup,maintenance}.js`; contoh cron ada di [`ops/crontab.example`](../ops/crontab.example).
@@ -137,7 +137,7 @@ curl -s localhost:4000/api/health                       # (5) counts naik, tidak
 ```
 
 1. **Selalu** backup sebelum menyentuh produksi.
-2. Skema SQLite **tidak** dimigrasikan otomatis selain `CREATE … IF NOT EXISTS`; kolom baru perlu `ALTER TABLE` eksplisit
+2. Skema SQLite: `CREATE … IF NOT EXISTS` + migrasi **aditif kolom** otomatis (`migrateSchema()`); perubahan lain (ubah CHECK/hapus kolom/backfill) belum otomatis
    (kebijakan: [02-skema-data.md §9](02-skema-data.md)). Karena itu rilis yang mengubah skema mencantumkan langkah `ALTER`
    di CHANGELOG, dan menjalankannya di DB **salinan** lebih dulu (`npm run maintenance -- restore …` ke pangkalan sementara).
 3. Jam rilis untuk toko retail: **setelah tutup – sebelum subuh** (mis. 22:30–04:00) + pengumuman H-1.

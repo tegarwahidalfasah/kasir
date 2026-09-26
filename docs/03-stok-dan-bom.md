@@ -93,13 +93,29 @@ sekali di akhir alih-alih per struk (`routes/pos.js` → `sales.js`).
 
 | Aksi | Endpoint | Efek pada ledger |
 |---|---|---|
-| Batalkan struk | `POST /api/sales/:id/void` | `reverseMovements({refType:'transaction', refId})`: gerakan keluar (`sale_out`, `bom_consume`) → baris **`return_in`** qty positif penuh; gerakan masuk (`purchase_in`, `production_in`) → **`adjustment`** negatif; baris lama ditandai `voided=1`. Stok kembali persisi (QA §1.6: 400/400). Hanya status `completed`; tanpa `sale.void` → `403` |
-| Retur sebagian | `POST /api/sales/:id/refund` `{item_id, qty, reason}` | Proporsional `f = qty_retur / qty_baris`: `return_in` barang jadi `deduct_qty×f` dan tiap bahan `r.qty×f`, dihitung ulang dengan `planStockImpact` (+`addons_json`) |
+| Batalkan struk | `POST /api/sales/:id/void` | `reverseMovements({refType:'transaction', refId})`: gerakan keluar (`sale_out`, `bom_consume`) → baris **`return_in`** qty positif penuh; gerakan masuk (`purchase_in`, `production_in`) → **`adjustment`** negatif; baris lama ditandai `voided=1`. Stok kembali persisi (QA §1.6: 400/400). Hanya status `completed`; tanpa `sale.void` → `403`. **Ditolak `409` bila transaksi sudah punya retur** — membatalkan setelah retur akan mengembalikan stok yang sama dua kali |
+| Retur sebagian | `POST /api/sales/:id/refund` `{item_id, qty, reason}` | Proporsional `f = qty_retur / qty_baris`: `return_in` barang jadi `deduct_qty×f` dan tiap bahan `r.qty×f`, dihitung ulang dengan `planStockImpact` (+`addons_json`). **Berpagar**: `transaction_items.refunded_qty` dinaikkan di dalam `tx()` yang sama dan permintaan yang melebihi sisa (`qty − refunded_qty`) ditolak `409` — retur tidak bisa diulang untuk menggandakan stok. Uang yang dikembalikan proporsional terhadap bagian baris pada tagihan dan diakumulasi ke `transactions.refund_total` (HPP ke `refund_cost`); bila seluruh baris sudah diretur penuh, status struk menjadi `refunded` |
 | Opname / koreksi | `POST /api/stock/adjust` `{counted_qty}` atau `{items:[{item_id, counted_qty, reason}]}` | Selisih terhadap stok saat ini ditulis sebagai `adjustment` (`ref_type='manual'`, `allowNegative:true`); baris yang tidak berubah di-*skip*; respons menyertakan `alerts` hasil pindai ulang |
 | Produksi terjadwal (MTS) | `POST /api/stock/produce` `{item_id, qty, reason?}` | Per bahan: `bom_consume` = `qty × r.qty × (1+waste) ÷ (yield/100)` (`ref_type='production'`); barang jadi: `production_in` = `qty × yield/100` dengan `unit_cost` = `cost_price` item. HPP roll-up dijaga lewat `syncCost()` saat resep disimpan |
 | Terima PO | `POST /api/purchase-orders/:id/receive` `{items?:{[poi_id]:{qty_received}}}` | `purchase_in` per baris (`ref_type='purchase_order'`), `qty_received` ditambah, status → `partial`/`received`; **HPP rata-rata bergerak** dihitung ulang di `inventory.js` |
 | Buat barang/jasa | `POST /api/items` · `PUT /api/items/:id` | Tidak menyentuh stok; menyimpan ulang resep memicu `syncCost()` → HPP barang jadi = Σ `r.qty × harga pokok bahan × (1+susut)` |
 | Nonaktifkan/hapus barang | `DELETE /api/items/:id` | Bila masih dipakai transaksi/resep → `is_active=0` (`{ok, soft_deleted:true}`); ledger & struk lama tetap utuh |
+
+### Retur: apa yang terjadi pada angka
+
+| Angka | Perlakuan |
+|---|---|
+| Stok | Barang jadi & tiap bahan kembali proporsional (`return_in`, `ref_type='refund'`), dihitung dengan resep + `addons_json` baris tersebut |
+| Sisa yang boleh diretur | `qty − refunded_qty` per baris; permintaan melebihi sisa → `409 Hanya N dari M "…" yang masih bisa diretur` |
+| Uang | `refund_total +=` bagian baris × `grand_total` (ikut bagian pajak/biaya/pembulatan) — retur penuh tidak pernah melebihi `grand_total` |
+| HPP | `refund_cost += cost_snapshot × qty` — barang yang kembali tidak dihitung sebagai HPP terjual |
+| Status struk | Retur sebagian → tetap `completed` (dengan `refund_total > 0`); semua baris penuh → `refunded` |
+| Laporan | Omzet, HPP, dan laba kotor di `GET /api/reports/summary` dihitung neto setelah retur; `totals.refund_total` & `totals.refunded` menampilkan nilainya |
+
+Belum dikerjakan (Sprint 1/2 docs/11): status tersendiri untuk retur sebagian (butuh membangun ulang CHECK
+`transactions.status`), tabel `refunds` sebagai buku retur tersendiri, dan baris uang keluar di
+`transaction_payments`.
+
 
 ## 6. Kesehatan stok & peringatan (Fase 3)
 

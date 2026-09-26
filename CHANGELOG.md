@@ -41,6 +41,34 @@ Belum dirilis. Bagian ini menggabungkan tiga rangkaian pekerjaan:
 
 ### Diperbaiki
 
+- **Retur bisa diulang tanpa batas → stok bahan baku digandakan** (temuan P0 #1 di
+  [`docs/11`](docs/11-analisis-2026-09-17.md), analisis Sprint 1). `refundLine()` hanya membatasi `qty`
+  terhadap qty baris asli, jadi memanggil retur berulang-ulang mengembalikan stok yang sama setiap kali
+  dan uang yang dikembalikan tidak pernah tercatat. **Bukti sebelum perbaikan** (struk `KS20260926-1330`,
+  baris qty 2): tiga retur berturut-turut semuanya `HTTP 200`, stok naik fiktif (Biji Kopi House Blend
+  +110,16 gr padahal hanya 36,72 gr yang terpakai; Cup +6 pcs; Es Batu +777,6 gr), status struk tetap
+  `completed`, dan laporan tetap menghitung struk itu penuh.
+  - Skema: `transaction_items.refunded_qty` (pagar per baris) + `transactions.refund_total` & `refund_cost`
+    (uang & HPP yang dikembalikan). Ketiganya **aditif** dan otomatis ditambahkan ke DB lama lewat
+    `migrateSchema()` di `server/src/db/index.js` — diuji dengan DB berskema lama: kolom muncul, data lama utuh.
+  - `refundLine()` menolak `409` bila qty melebihi sisa (`qty − refunded_qty`) atau baris sudah diretur penuh;
+    permintaan yang ditolak tidak menyentuh stok sama sekali. Retur mencatat `refund_amount` (proporsional
+    terhadap tagihan, ikut bagian pajak/biaya/pembulatan, tidak pernah melebihi `grand_total`) dan
+    `refund_cost`; bila **semua** baris sudah penuh, status struk menjadi `refunded`.
+  - `voidSale()` **menolak** membatalkan struk yang sudah punya retur (`409`) — pembatalan membalikkan seluruh
+    potongan asli, sehingga stok yang sudah kembali akan dikembalikan dua kali.
+  - Laporan `GET /api/reports/summary`: omzet/HPP/laba kotor dihitung neto setelah retur (harian, per jam,
+    per barang, per kasir), `by_item` menampilkan qty & omzet neto, CSV penjualan memuat `refund_total`, dan
+    `totals.refund_total` + `totals.refunded` tersedia untuk dasbor.
+  - UI Riwayat: modal retur menampilkan **sisa yang masih bisa diretur** per baris, menyembunyikan pilihan yang
+    sudah penuh, dan mentokkan input pada sisa; detail struk menampilkan nilai retur.
+  - Tes: **+4 tes regresi** (57 → 61) — tiga di `server/tests/stock.test.js` (domain: retur berulang ditolak &
+    stok tidak berubah, retur sebagian mencatat uang/HPP proporsional, void setelah retur ditolak) dan satu di
+    `server/tests/api.test.js` (HTTP: `409` saat melebihi sisa, `refund_amount`, omzet laporan neto,
+    `status='refunded'`, void ditolak). Ketiga tes domain **gagal pada kode lama** (diverifikasi), jadi bug ini
+    tidak bisa lolos lagi.
+  - Sisa yang belum dikerjakan (docs/03 §5): status tersendiri untuk retur sebagian (butuh membangun ulang
+    CHECK `transactions.status`), tabel `refunds`, dan baris uang keluar di `transaction_payments`.
 - **`POST /api/pos/hold` selalu 500** (`storeId is not defined` di `server/src/routes/pos.js`) → fitur
   *order tertahan* hidup kembali: keranjang kosong ditolak 400, nomor hold dijamin unik terhadap
   `uq_tx_invoice` (dua kasir menahan pada detik yang sama tidak lagi bertabrakan), aksi dicatat ke
@@ -110,13 +138,17 @@ Belum dirilis. Bagian ini menggabungkan tiga rangkaian pekerjaan:
   kredensial demo publik). Perubahan kode untuk menutup auto-seed dijadwalkan di Sprint 2. (docs/11 §10)
 - Dokumentasi disinkronkan untuk bagian yang tersentuh putaran ini: jumlah tes (docs/08, docs/09, docs/10),
   CSP & pembatas login (docs/04), hasil putaran verifikasi ketiga (docs/08 §3).
+- **Migrasi skema aditif**: kolom baru sekarang didaftarkan di `ADDITIVE_COLUMNS` (`server/src/db/index.js`)
+  dan ditambahkan otomatis ke DB lama saat boot (`ALTER TABLE … ADD COLUMN`, idempoten). Ini menutup sebagian
+  celah "belum ada migrasi" — perubahan yang membangun ulang tabel (ubah CHECK/hapus kolom/backfill) tetap
+  perlu langkah rilis bernomor versi. Dokumen disinkronkan: README, `docs/01` §3/§7, `docs/02` §5, `docs/09` §8.
 
 ### Diketahui / belum
 
 - Perbaikan **zona waktu** (memakai `stores.timezone` untuk `created_at`, laporan harian, nomor struk,
   dan filter tanggal) belum dikerjakan — lihat `docs/10` §2 untuk dampak & contohnya.
-- **Migrasi skema bertahap** dan **shift kas** belum ada; urutan prioritasnya ada di `docs/10` §2.
-- **Sprint 1/2 (rencana, tercantum di `docs/11`)**: retur berulang tanpa batas, retur berbasis snapshot,
+- **Migrasi skema bernomor versi** (rollback/backfill/rebuild tabel) dan **shift kas** belum ada; urutan prioritasnya ada di `docs/10` §2.
+- **Sprint 1/2 (rencana, tercantum di `docs/11`)**: ~~retur berulang tanpa batas~~ (sudah diperbaiki), retur berbasis snapshot,
   `forceConsumeRaw` yang diabaikan mesin BOM, zona waktu sisi laporan, permission per blok setting,
   CSV formula injection, dan gating auto-seed Vercel.
 

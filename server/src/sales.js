@@ -238,19 +238,60 @@ export function voidSale({ storeId, txId, userId, reason }) {
   const tx = firstRow(`SELECT * FROM transactions WHERE id = ? AND store_id = ?`, txId, storeId);
   if (!tx) throw new AppError(404, 'Transaksi tidak ditemukan');
   if (tx.status !== 'completed') throw new AppError(409, `Transaksi sudah ${tx.status}`);
+  // Pembatalan membalikkan SELURUH potongan asli; bila sebagian sudah diretur (stok sudah
+  // kembali), pembatalan akan mengembalikannya dua kali. Sisanya harus lewat retur.
+  const refundedLines = firstRow(
+    `SELECT COUNT(*) AS n FROM transaction_items WHERE transaction_id = ? AND refunded_qty > 0`, txId)?.n || 0;
+  if (refundedLines) {
+    throw new AppError(409, 'Transaksi sudah memiliki retur — kembalikan sisanya lewat retur, bukan pembatalan');
+  }
   const reversed = reverseMovements({ storeId, refType: 'transaction', refId: txId, reason: reason || 'Pembatalan transaksi', userId });
   exec(`UPDATE transactions SET status='voided', voided_at=?, void_reason=?, voided_by=? WHERE id=?`, nowIso(), reason || null, userId, txId);
   return { id: txId, invoice_no: tx.invoice_no, status: 'voided', movements_reversed: reversed };
 }
 
 /** Retur sebagian: kembalikan qty tertentu per baris (stok finished + bahan baku proporsional). */
+/**
+ * Nilai uang yang dikembalikan untuk `refundQty` pada satu baris.
+ * Proporsional terhadap bagian baris pada tagihan dasar (subtotal - diskon), lalu dikalikan
+ * `grand_total` supaya bagian pajak/biaya layanan/pembulatan ikut kembali sebanding —
+ * sehingga retur penuh atas semua baris mengembalikan tepat sebesar grand_total.
+ * Selalu dibatasi sisa uang struk yang belum diretur.
+ */
+function refundMoney(tx, line, refundQty) {
+  const grand = Number(tx.grand_total) || 0;
+  const base = (Number(tx.subtotal) || 0) - (Number(tx.discount_total) || 0);
+  const frac = line.qty > 0 ? refundQty / line.qty : 0;
+  const share = base > 0 ? (Number(line.line_total) || 0) / base : 1;
+  const sisa = Math.max(0, grand - (Number(tx.refund_total) || 0));
+  return Math.min(Math.round(grand * share * frac), Math.round(sisa));
+}
+
+/**
+ * Retur sebagian satu baris transaksi.
+ *
+ * PAGAR: `transaction_items.refunded_qty` dicatat per baris, sehingga qty yang diretur
+ * tidak bisa melebihi qty terjual dikurangi yang sudah diretur. Sebelum ada kolom ini,
+ * memanggil retur berulang-ulang mengembalikan stok yang sama setiap kali (stok bahan
+ * baku "muncul dari udara" — docs/11 §1) dan uang retur tidak pernah tercatat.
+ */
 export function refundLine({ storeId, txId, itemId, qty, userId, reason }) {
   const tx = firstRow(`SELECT * FROM transactions WHERE id = ? AND store_id = ?`, txId, storeId);
   if (!tx) throw new AppError(404, 'Transaksi tidak ditemukan');
+  if (tx.status === 'voided') throw new AppError(409, 'Transaksi sudah dibatalkan — retur tidak berlaku');
+  if (tx.status === 'open') throw new AppError(409, 'Order masih tertahan — selesaikan atau hapus dulu sebelum retur');
   const line = firstRow(`SELECT * FROM transaction_items WHERE transaction_id = ? AND item_id = ?`, txId, itemId);
   if (!line) throw new AppError(404, 'Barang tidak ada di transaksi ini');
-  const refundQty = Math.min(Number(qty) || 0, line.qty);
+  const refundQty = Number(qty) || 0;
   if (refundQty <= 0) throw new AppError(400, 'Jumlah retur tidak valid');
+  const already = round2(line.refunded_qty || 0);
+  const remaining = round2(line.qty - already);
+  if (remaining <= 0) throw new AppError(409, `"${line.name_snapshot}" sudah diretur penuh (${line.qty})`);
+  if (refundQty > remaining) {
+    throw new AppError(409, `Hanya ${remaining} dari ${line.qty} "${line.name_snapshot}" yang masih bisa diretur`);
+  }
+  const refundAmount = refundMoney(tx, line, refundQty);
+  const refundCost = round2((Number(line.cost_snapshot) || 0) * refundQty);
 
   const catalog = catalogFor(storeId);
   const recipes = recipesFor([itemId]);
@@ -265,7 +306,24 @@ export function refundLine({ storeId, txId, itemId, qty, userId, reason }) {
     const m = postMovement({ storeId, itemId: r.item_id, type: 'return_in', qty: r.qty, unitCost: catalog[r.item_id]?.cost_price, refType: 'refund', refId: txId, reason: `Retur BOM ${line.name_snapshot}`, userId, allowNegative: allowNeg });
     if (!m.skipped) moved.push({ item_id: r.item_id, qty: r.qty });
   }
-  return { id: txId, item: line.name_snapshot, refund_qty: refundQty, movements: moved };
+
+  // catat qty yang sudah diretur (pagar) + uang/HPP yang dikembalikan
+  exec(`UPDATE transaction_items SET refunded_qty = ? WHERE id = ?`, round2(already + refundQty), line.id);
+  exec(`UPDATE transactions SET refund_total = ? , refund_cost = ? WHERE id = ?`,
+    round2((Number(tx.refund_total) || 0) + refundAmount), round2((Number(tx.refund_cost) || 0) + refundCost), txId);
+
+  // baris penuh -> status 'refunded'; sebagian tetap 'completed' + refund_total > 0
+  const left = allRows(`SELECT qty, refunded_qty FROM transaction_items WHERE transaction_id = ?`, txId)
+    .filter((l) => round2(l.qty - l.refunded_qty) > 0).length;
+  const fullyRefunded = left === 0;
+  if (fullyRefunded) exec(`UPDATE transactions SET status = 'refunded' WHERE id = ? AND status = 'completed'`, txId);
+
+  return {
+    id: txId, item: line.name_snapshot, refund_qty: refundQty,
+    refund_amount: refundAmount, remaining_qty: round2(remaining - refundQty),
+    fully_refunded: fullyRefunded, status: fullyRefunded ? 'refunded' : tx.status,
+    movements: moved,
+  };
 }
 
 export function listSales(storeId, { from, to, limit = 100, offset = 0, status, cashierId } = {}) {

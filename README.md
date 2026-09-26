@@ -43,7 +43,7 @@ Detail tiap fase ada di folder [`docs/`](docs/).
 |---|---|---|
 | Runtime & API | **Node.js ≥ 22.5** + Express 5 | Satu bahasa (JS) di seluruh stack; LTS aktif |
 | Database | **SQLite** lewat modul bawaan `node:sqlite` | Nol dependensi native / nol servis tambahan → deployment cukup 1 proses Node + 1 berkas DB; transaksi ACID + `BEGIN IMMEDIATE` |
-| Migrasi skema | `schema.sql` idempoten (`CREATE … IF NOT EXISTS`) di `server/src/db/` | Skema adalah sumber kebenaran & aman dijalankan berulang saat startup. **Belum ada migrasi bertahap**: `PRAGMA user_version` tidak dipakai, jadi menambah kolom pada rilis berikutnya tidak mengubah DB lama yang sudah berisi data (lihat [docs/01](docs/01-arsitektur.md) §7) |
+| Migrasi skema | `schema.sql` idempoten (`CREATE … IF NOT EXISTS`) + **migrasi aditif kolom** (`migrateSchema()` di `server/src/db/index.js`) | Skema adalah sumber kebenaran & aman dijalankan berulang saat startup; kolom baru pada DB lama ditambahkan otomatis (`ALTER TABLE … ADD COLUMN`) tanpa alat terpisah. Belum ada migrasi bernomor/rollback atau perubahan yang membangun ulang tabel (lihat [docs/01](docs/01-arsitektur.md) §7) |
 | Web frontend | **React 18 + Vite** (SPA) | Build cepat, dev server dengan proxy `/api`, cocok untuk UI interaktif seperti POS |
 | State & data client | Context store buatan sendiri (`client/src/store.jsx`) + helper `api` (`useApi`) | Kebutuhan state aplikasi kecil; menghindari dependensi tambahan |
 | Styling | CSS vanilla + token (design tokens) di `:root` | Tema/logo/menu bisa diganti user lewat `settings.theme` tanpa rebuild |

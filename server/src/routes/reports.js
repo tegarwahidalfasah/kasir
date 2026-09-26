@@ -22,10 +22,14 @@ const range = (req) => {
 router.get(MOUNT + '/reports/summary', auth(), http((req, res) => {
   const { from, to } = range(req);
   const storeId = req.storeId;
+  // Retur sebagian mengurangi omzet & HPP pada transaksi berstatus 'completed'; transaksi
+  // yang diretur penuh berubah status menjadi 'refunded' sehingga keluar dari agregat ini
+  // (seperti 'voided'). Lihat docs/03 §"retur" dan docs/11 §1.
   const head = firstRow(
     `SELECT COUNT(*) AS tx_count, COALESCE(SUM(grand_total),0) AS gross, COALESCE(SUM(cost_total),0) AS cost,
             COALESCE(SUM(discount_total),0) AS discount, COALESCE(SUM(tax_total),0) AS tax,
-            COALESCE(SUM(service_total),0) AS service
+            COALESCE(SUM(service_total),0) AS service,
+            COALESCE(SUM(refund_total),0) AS refunds, COALESCE(SUM(refund_cost),0) AS refund_cost
      FROM transactions WHERE store_id = ? AND status = 'completed' AND date(created_at) BETWEEN ? AND ?`,
     storeId, from, to
   );
@@ -33,23 +37,35 @@ router.get(MOUNT + '/reports/summary', auth(), http((req, res) => {
     `SELECT COUNT(*) AS n FROM transactions WHERE store_id = ? AND status = 'voided' AND date(created_at) BETWEEN ? AND ?`,
     storeId, from, to
   ).n;
+  const refundedCount = firstRow(
+    `SELECT COUNT(*) AS n FROM transactions WHERE store_id = ? AND status = 'refunded' AND date(created_at) BETWEEN ? AND ?`,
+    storeId, from, to
+  ).n;
   const byDay = allRows(
-    `SELECT date(created_at) AS day, COUNT(*) AS tx_count, SUM(grand_total) AS revenue, SUM(grand_total - cost_total - tax_total) AS profit
+    `SELECT date(created_at) AS day, COUNT(*) AS tx_count,
+            SUM(grand_total - refund_total) AS revenue,
+            SUM(grand_total - refund_total - (cost_total - refund_cost) - tax_total) AS profit
      FROM transactions WHERE store_id = ? AND status = 'completed' AND date(created_at) BETWEEN ? AND ?
      GROUP BY day ORDER BY day`,
     storeId, from, to
   ).map((r) => ({ ...r, revenue: round2(r.revenue), profit: round2(r.profit) }));
 
   const byHour = allRows(
-    `SELECT CAST(strftime('%H', created_at, 'localtime') AS INTEGER) AS hour, COUNT(*) AS tx_count, SUM(grand_total) AS revenue
+    `SELECT CAST(strftime('%H', created_at, 'localtime') AS INTEGER) AS hour, COUNT(*) AS tx_count,
+            SUM(grand_total - refund_total) AS revenue
      FROM transactions WHERE store_id = ? AND status = 'completed' AND date(created_at) BETWEEN ? AND ?
      GROUP BY hour ORDER BY hour`,
     storeId, from, to
   ).map((r) => ({ ...r, revenue: round2(r.revenue) }));
 
+  // qty/revenue/HPP dihitung neto: baris yang sudah diretur tidak dihitung terjual
+  // (barangnya kembali ke stok), dengan pembagian proporsional bila hanya sebagian.
   const byItem = allRows(
-    `SELECT ti.item_id, ti.name_snapshot AS name, SUM(ti.qty) AS qty, SUM(ti.line_total) AS revenue,
-            SUM(ti.cost_snapshot * ti.qty) AS cost, SUM(ti.line_discount) AS discount
+    `SELECT ti.item_id, ti.name_snapshot AS name,
+            SUM(ti.qty - ti.refunded_qty) AS qty,
+            SUM(CASE WHEN ti.qty > 0 THEN ti.line_total * (ti.qty - ti.refunded_qty) / ti.qty ELSE 0 END) AS revenue,
+            SUM(ti.cost_snapshot * (ti.qty - ti.refunded_qty)) AS cost,
+            SUM(ti.line_discount) AS discount
      FROM transaction_items ti JOIN transactions t ON t.id = ti.transaction_id
      WHERE t.store_id = ? AND t.status = 'completed' AND date(t.created_at) BETWEEN ? AND ?
      GROUP BY ti.item_id, ti.name_snapshot ORDER BY revenue DESC LIMIT 25`,
@@ -70,26 +86,29 @@ router.get(MOUNT + '/reports/summary', auth(), http((req, res) => {
   ).map((r) => ({ ...r, amount: round2(r.amount) }));
 
   const byCashier = allRows(
-    `SELECT u.display_name AS name, COUNT(t.id) AS tx_count, SUM(t.grand_total) AS revenue, SUM(t.grand_total - t.cost_total) AS gross_profit
+    `SELECT u.display_name AS name, COUNT(t.id) AS tx_count, SUM(t.grand_total - t.refund_total) AS revenue,
+            SUM(t.grand_total - t.refund_total - (t.cost_total - t.refund_cost)) AS gross_profit
      FROM transactions t LEFT JOIN users u ON u.id = t.cashier_id
      WHERE t.store_id = ? AND t.status = 'completed' AND date(t.created_at) BETWEEN ? AND ?
      GROUP BY t.cashier_id ORDER BY revenue DESC`,
     storeId, from, to
   ).map((r) => ({ ...r, revenue: round2(r.revenue), gross_profit: round2(r.gross_profit) }));
 
-  const revenue = round2(head.gross);
+  const revenue = round2(head.gross - head.refunds);
+  const cost = round2(head.cost - head.refund_cost);
   res.json({
     period: { from, to },
     totals: {
       tx_count: head.tx_count,
       gross_revenue: revenue,
       net_revenue: round2(revenue - head.tax),
-      cost: round2(head.cost),
-      gross_profit: round2(revenue - head.cost - head.tax),
-      margin_pct: revenue > 0 ? round2(((revenue - head.cost - head.tax) / revenue) * 100) : 0,
+      cost,
+      gross_profit: round2(revenue - cost - head.tax),
+      margin_pct: revenue > 0 ? round2(((revenue - cost - head.tax) / revenue) * 100) : 0,
       avg_ticket: head.tx_count ? round2(revenue / head.tx_count) : 0,
       discount: round2(head.discount), tax: round2(head.tax), service: round2(head.service),
-      voided: voidedCount,
+      refund_total: round2(head.refunds), refund_cost: round2(head.refund_cost),
+      voided: voidedCount, refunded: refundedCount,
     },
     by_day: byDay, by_hour: byHour, by_item: byItem, by_payment: byPayment, by_cashier: byCashier,
   });
@@ -173,12 +192,12 @@ router.get(MOUNT + '/reports/export/:kind', auth('report.export'), http((req, re
   if (kind === 'sales') {
     const rows = allRows(
       `SELECT t.invoice_no, t.created_at, u.display_name AS cashier, t.status, t.subtotal, t.discount_total,
-              t.tax_total, t.grand_total, t.cost_total, t.customer_name, pm.name AS payment
+              t.tax_total, t.grand_total, t.refund_total, t.cost_total, t.customer_name, pm.name AS payment
        FROM transactions t LEFT JOIN users u ON u.id = t.cashier_id
        LEFT JOIN payment_methods pm ON pm.id = t.payment_method_id
        WHERE t.store_id = ? AND date(t.created_at) BETWEEN ? AND ? ORDER BY t.created_at DESC`,
       req.storeId, from, to);
-    csv = toCsv(rows, ['invoice_no', 'created_at', 'cashier', 'status', 'subtotal', 'discount_total', 'tax_total', 'grand_total', 'cost_total', 'customer_name', 'payment']);
+    csv = toCsv(rows, ['invoice_no', 'created_at', 'cashier', 'status', 'subtotal', 'discount_total', 'tax_total', 'grand_total', 'refund_total', 'cost_total', 'customer_name', 'payment']);
   } else if (kind === 'movements') {
     const rows = allRows(
       `SELECT m.created_at, i.name, i.item_type, m.movement_type, m.qty, i.unit, m.unit_cost, m.balance_after, m.reason

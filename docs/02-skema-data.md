@@ -87,9 +87,18 @@ Pembatalan struk membalik baris di dalam satu `tx()` (`reverseMovements` di `ser
 
 | Tabel | Kolom |
 |---|---|
-| `transactions` | `id`, `store_id`, `branch_id`, `invoice_no` (`{prefix}{YYYYMMDD}-{nomor urut 4 digit}`, contoh `KS20260916-1328`), `external_ref` **UNIQUE** (kunci idempotensi dari klien), `cashier_id`, `status` CHECK `('completed','voided','refunded','open')` (`open` = order tertahan), `customer_name`, `customer_phone`, `order_type` (teks bebas; nilai UI: `dine_in`, `take_away`, `delivery`, `online`; awal dari `pos.default_order_type`), `note`, `subtotal`, `discount_total`, `tax_total`, `service_total`, `rounding_total`, `grand_total`, `cost_total` (HPP → margin), `payment_method_id`, `paid_amount`, `change_amount`, `fee_total` (biaya metode bayar), `applied_discounts` (JSON aturan yang terpakai), `receipt_snapshot` (JSON struk terkunci), `voided_at`, `void_reason`, `voided_by`, `created_at` · indeks `idx_tx_created`, `idx_tx_cashier` |
-| `transaction_items` | `id`, `transaction_id` (CASCADE), `item_id`→items (SET NULL, agar riwayat selamat bila barang dihapus), `name_snapshot`, `item_type`, `qty`, `unit_price`, `line_discount`, `line_total`, `cost_snapshot`, `addons_json` (rincian addon/ topping untuk struk & retur), `created_at` · indeks `idx_txitem_tx`, `idx_txitem_item` |
+| `transactions` | `id`, `store_id`, `branch_id`, `invoice_no` (`{prefix}{YYYYMMDD}-{nomor urut 4 digit}`, contoh `KS20260916-1328`), `external_ref` **UNIQUE** (kunci idempotensi dari klien), `cashier_id`, `status` CHECK `('completed','voided','refunded','open')` (`open` = order tertahan), `customer_name`, `customer_phone`, `order_type` (teks bebas; nilai UI: `dine_in`, `take_away`, `delivery`, `online`; awal dari `pos.default_order_type`), `note`, `subtotal`, `discount_total`, `tax_total`, `service_total`, `rounding_total`, `grand_total`, `cost_total` (HPP → margin), `payment_method_id`, `paid_amount`, `change_amount`, `fee_total` (biaya metode bayar), `applied_discounts` (JSON aturan yang terpakai), `receipt_snapshot` (JSON struk terkunci), `refund_total` & `refund_cost` (akumulasi uang & HPP yang dikembalikan lewat retur sebagian; baris penuh → `status='refunded'`), `voided_at`, `void_reason`, `voided_by`, `created_at` · indeks `idx_tx_created`, `idx_tx_cashier` |
+| `transaction_items` | `id`, `transaction_id` (CASCADE), `item_id`→items (SET NULL, agar riwayat selamat bila barang dihapus), `name_snapshot`, `item_type`, `qty`, `unit_price`, `line_discount`, `line_total`, `cost_snapshot`, `addons_json` (rincian addon/ topping untuk struk & retur), `refunded_qty` (berapa qty baris ini yang **sudah** diretur — pagar agar retur tidak bisa diulang tanpa batas), `created_at` · indeks `idx_txitem_tx`, `idx_txitem_item` |
 | `transaction_payments` | `id`, `transaction_id` (CASCADE), `payment_method_id`, `amount`, `reference`, `created_at` — mendukung pembayaran terbagi (tunai + QRIS) |
+
+### Pagar retur (`refunded_qty`)
+
+Tanpa `transaction_items.refunded_qty`, `POST /api/sales/:id/refund` hanya membatasi qty terhadap qty baris asli,
+sehingga retur yang diulang-ulang mengembalikan stok yang sama setiap kali (bahan baku "muncul dari udara") dan
+uangnya tidak pernah tercatat. Sekarang setiap retur menaikkan `refunded_qty` di dalam `tx()` yang sama, dan
+`refundLine()` menolak `409` bila qty yang diminta melebihi sisa (`qty − refunded_qty`).
+Kolom ini aditif — DB lama ikut ter-upgrade otomatis saat boot, lihat `migrateSchema()` di `server/src/db/index.js`
+dan [01-arsitektur.md](01-arsitektur.md) §7.
 
 Baris item **tidak** menyimpan hasil BOM per baris; potongan bahan dapat direkonstruksi dari `item_id` + `qty` + `addons_json`
 (dipakai saat retur: `planStockImpact` dijalankan ulang), dan daftar `stock_movements` dengan `ref_type='transaction'` adalah
@@ -142,7 +151,7 @@ memperhalusnya dengan `lead_time_days`, `safety_stock`, kapasitas bahan untuk pr
 ## 9. Kebijakan perubahan skema
 
 Ringkas: tidak ada tabel versi migrasi; `schema.sql` hanya **membuat** objek baru (tidak pernah mengubah yang lama),
-sehingga penambahan kolom di DB produksi butuh `ALTER TABLE … ADD COLUMN` eksplisit sebagai langkah rilis
+sehingga penambahan kolom di DB produksi perlu didaftarkan di `ADDITIVE_COLUMNS` (`server/src/db/index.js`) supaya ditambahkan otomatis saat boot
 (lihat [01-arsitektur.md §7](01-arsitektur.md) dan [09-deployment-dan-maintenance.md §7](09-deployment-dan-maintenance.md)).
 Jalankan perubahan skema lebih dulu pada **salinan** hasil cadangan (`npm run maintenance -- restore <cadangan> --yes`
 dengan `KASIR_DATA_DIR` sementara), baru pada DB live.
