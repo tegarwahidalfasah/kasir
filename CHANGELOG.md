@@ -3,6 +3,61 @@
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id/), nomor versi mengikuti
 [Semantic Versioning](https://semver.org/lang/id/). Tanggal memakai zona waktu toko (Asia/Jakarta).
 
+## [Unreleased]
+
+### Ditambahkan
+
+- **CI GitHub Actions** (`.github/workflows/ci.yml`): dua job pada setiap push & pull request —
+  `check` (uji unit backend + smoke UI jsdom + build SPA) dan `qa` (simulasi 400 transaksi, uji RBAC
+  & pemindaian kolom rahasia). Memakai `npm ci` dengan cache npm dan versi Node dari `.nvmrc`.
+- **`LICENSE`**: lisensi source-available (seluruh hak dilindungi) yang menyatakan secara eksplisit
+  apa yang boleh (membaca, mempelajari, menjalankan untuk operasional toko sendiri) dan apa yang
+  memerlukan izin tertulis (menyalin, memodifikasi, menyebarkan, memakai sebagai layanan pihak ketiga),
+  beserta penyangkalan jaminan. README bagian Lisensi diperbarui agar mengarah ke berkas ini.
+- **`.env.example`**: seluruh variabel lingkungan yang benar-benar dibaca kode (runtime, keamanan,
+  pengembangan/uji, platform) dengan nilai produksi yang disarankan — termasuk catatan bahwa aplikasi
+  sengaja tidak memuat `.env` otomatis (tanpa `dotenv`), jadi harus lewat `--env-file`, ekspor shell,
+  atau `EnvironmentFile` systemd.
+- **`.nvmrc`** (`22`) dan **`.editorconfig`** (UTF-8, LF, 2 spasi, baris maksimum 140) sebagai
+  kesepakatan versi & format dasar antar editor.
+
+### Diperbaiki (dokumen menyimpang dari kode)
+
+- README & `docs/01`: **Express 4 → Express 5** (yang terpasang 5.2.1; komentar di `server/src/index.js`
+  sejak awal sudah menulis Express 5).
+- `docs/01` §2: daftar middleware menyebut `cors` dan `multer` yang **tidak pernah terpasang**.
+  Diganti dengan keadaan sebenarnya: satu-satunya dependensi produksi adalah `express`; `react`, `vite`,
+  `concurrently`, `esbuild`, `jsdom` hanya dipakai saat build/uji.
+- `docs/01` §3: deskripsi `server/src/index.js` menyebut `express.json({limit:'8mb'})` (aslinya `12mb`),
+  `cors`, dan fungsi `initDb()` yang tidak ada. Kini mencantumkan header keamanan, `/api/health`,
+  `/api/openapi.json`, fallback SPA, dan penegasan tidak ada `cors`/`initDb()`.
+- `docs/01` §2: isi token diklaim `userId, storeId, branchId, role, pin, exp`; aslinya hanya
+  `{ uid, role, sid, iat, exp }` — `branchId` dan permission dibaca ulang dari DB tiap permintaan.
+- `docs/01` §5: default `KASIR_DATA_DIR` ditulis `server/data` (aslinya `server/src/data`),
+  `KASIR_JWT_SECRET` diklaim "rahasia dev tetap di kode" (aslinya dibangkitkan & disimpan ke
+  `.jwt-secret` mode 0600), dan `KASIR_TOKEN_TTL` ditulis `12h` (aslinya detik: `43200`).
+- `docs/01` §6: klaim "uang selalu integer Rupiah" diperjelas — nilainya dibulatkan, tetapi kolomnya
+  bertipe `REAL` di SQLite.
+- `docs/01` §7: klaim **"`POST /api/stock/transfer` sudah tersedia"** dihapus — endpoint itu tidak ada.
+  Diganti dengan keadaan sebenarnya (stok belum dipisah per cabang, laporan belum bisa difilter cabang,
+  `transfer` masih nilai CHECK yang belum pernah ditulis) beserta arah perbaikannya.
+- `docs/02`: nilai `movement_type` `transfer` ditandai sebagai cadangan yang belum diimplementasikan.
+- README baris "Migrasi skema": ditambahkan peringatan bahwa belum ada migrasi bertahap
+  (`PRAGMA user_version` tidak dipakai), sehingga menambah kolom pada rilis berikutnya tidak mengubah
+  DB lama yang sudah berisi data.
+- `docs/10` §1: baris "belum (v0.2+)" dilengkapi dengan celah yang belum tercatat — alur pindai barcode,
+  split payment, cetak ESC/POS langsung, master pelanggan/poin, dan shift kas.
+- `docs/10` §2: ditambahkan **"Risiko teknis yang diketahui (per 26 Sep 2026)"** — zona waktu toko yang
+  belum diterapkan pada perhitungan tanggal (laporan harian, nomor struk, filter `from`/`to`),
+  ketiadaan migrasi skema bertahap, kolom uang `REAL`, status multi-cabang, dan dua advisory dependensi
+  dev (`esbuild`/`vite`).
+
+### Diketahui / belum
+
+- Perbaikan **zona waktu** (memakai `stores.timezone` untuk `created_at`, laporan harian, nomor struk,
+  dan filter tanggal) belum dikerjakan — lihat `docs/10` §2 untuk dampak & contohnya.
+- **Migrasi skema bertahap** dan **shift kas** belum ada; urutan prioritasnya ada di `docs/10` §2.
+
 ## [0.1.0] — 2026-09-16
 
 Rilis internal: Fase 1–3 terimplementasi sebagai kode berjalan, Fase 4 berupa rangkaian uji + dokumen

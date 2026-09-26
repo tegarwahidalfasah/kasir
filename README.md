@@ -1,5 +1,7 @@
 # Kasir — POS web dengan potongan stok bahan baku otomatis
 
+[![CI](https://github.com/tegarwahidalfasah/kasir/actions/workflows/ci.yml/badge.svg)](https://github.com/tegarwahidalfasah/kasir/actions/workflows/ci.yml)
+
 Sistem kasir (Point of Sale) berbasis website untuk UMKM F&B / retail yang menjual **barang jadi hasil produksi sendiri**.
 Ciri utamanya: satu produk dapat memotong **banyak bahan baku sekaligus** dalam satu transaksi (Bill of Materials / resep),
 stok real-time, hak akses per peran, dan tampilan yang bisa dikustomisasi sendiri oleh pemilik toko tanpa menyentuh kode.
@@ -39,9 +41,9 @@ Detail tiap fase ada di folder [`docs/`](docs/).
 
 | Lapisan | Pilihan | Alasan |
 |---|---|---|
-| Runtime & API | **Node.js ≥ 22.5** + Express 4 | Satu bahasa (JS) di seluruh stack; LTS aktif |
+| Runtime & API | **Node.js ≥ 22.5** + Express 5 | Satu bahasa (JS) di seluruh stack; LTS aktif |
 | Database | **SQLite** lewat modul bawaan `node:sqlite` | Nol dependensi native / nol servis tambahan → deployment cukup 1 proses Node + 1 berkas DB; transaksi ACID + `BEGIN IMMEDIATE` |
-| Migrasi skema | `schema.sql` idempoten (`CREATE … IF NOT EXISTS`) di `server/src/db/` | Skema adalah sumber kebenaran; mudah direplikasi ke produksi |
+| Migrasi skema | `schema.sql` idempoten (`CREATE … IF NOT EXISTS`) di `server/src/db/` | Skema adalah sumber kebenaran & aman dijalankan berulang saat startup. **Belum ada migrasi bertahap**: `PRAGMA user_version` tidak dipakai, jadi menambah kolom pada rilis berikutnya tidak mengubah DB lama yang sudah berisi data (lihat [docs/01](docs/01-arsitektur.md) §7) |
 | Web frontend | **React 18 + Vite** (SPA) | Build cepat, dev server dengan proxy `/api`, cocok untuk UI interaktif seperti POS |
 | State & data client | Context store buatan sendiri (`client/src/store.jsx`) + helper `api` (`useApi`) | Kebutuhan state aplikasi kecil; menghindari dependensi tambahan |
 | Styling | CSS vanilla + token (design tokens) di `:root` | Tema/logo/menu bisa diganti user lewat `settings.theme` tanpa rebuild |
@@ -59,6 +61,11 @@ npm install
 npm run seed          # contoh data: 328 transaksi 30 hari ke belakang, 9 bahan baku + 9 barang jadi
 npm run dev           # API http://127.0.0.1:4000  +  web http://127.0.0.1:5173
 ```
+
+Versi Node mengikuti [`.nvmrc`](.nvmrc) (`nvm use`). Daftar variabel lingkungan beserta
+nilai produksinya ada di [`.env.example`](.env.example) — catat bahwa aplikasi ini **tidak**
+memuat berkas `.env` otomatis (tanpa dependensi `dotenv`); lihat cara memuatnya di bagian
+kepala berkas contoh tersebut.
 
 Login demo (kata sandi sama untuk semua): `rahasia123`
 
@@ -166,4 +173,7 @@ kasir/
 
 ## Lisensi
 
-Source-available untuk keperluan internal proyek; lihat [CHANGELOG.md](CHANGELOG.md) untuk riwayat perubahan.
+**Source-available, bukan open source** — kode boleh dibaca, dipelajari, dan dipakai untuk
+operasional toko sendiri; penyalinan, modifikasi, penyebaran, dan penggunaan sebagai layanan
+pihak ketiga memerlukan izin tertulis. Ketentuan lengkap ada di [LICENSE](LICENSE).
+Riwayat perubahan ada di [CHANGELOG.md](CHANGELOG.md).

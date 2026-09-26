@@ -65,7 +65,7 @@ Indeks: `idx_items_type (item_type, is_active)`, `idx_items_cat (category_id)`.
 | Kolom | Arti |
 |---|---|
 | `store_id`, `branch_id`, `item_id` | Lokasi & barang yang berubah |
-| `movement_type` | CHECK: `sale_out` (potong barang jadi saat transaksi), `bom_consume` (potong bahan: penjualan MTO, produksi, simulasi), `purchase_in` (terima PO), `production_in` (stok masuk hasil produksi), `return_in` (retur/pembatalan), `adjustment` (opname/koreksi), `transfer` (antar cabang) |
+| `movement_type` | CHECK: `sale_out` (potong barang jadi saat transaksi), `bom_consume` (potong bahan: penjualan MTO, produksi, simulasi), `purchase_in` (terima PO), `production_in` (stok masuk hasil produksi), `return_in` (retur/pembatalan), `adjustment` (opname/koreksi). Nilai `transfer` juga diizinkan skema tetapi **cadangan untuk mutasi antar cabang yang belum diimplementasikan** — belum ada endpoint yang menulisnya |
 | `qty` | REAL; **positif = masuk, negatif = keluar** |
 | `unit_cost` | Harga pokok saat gerakan (dipakai HPP struk & valuasi) |
 | `balance_after` | Stok item setelah baris ini — dipakai pemeriksaan integritas & rekonsiliasi |

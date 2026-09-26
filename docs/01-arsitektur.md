@@ -10,7 +10,7 @@ tidak ada servis eksternal (Redis/Postgres/nginx wajib) — sehingga pemasangan 
 Peramban (kasir/manajer/admin)
    │  fetch('/api/…') + token di header Authorization
    ▼
-Express 4  ── middleware: authenticate → authorize(permission) → handler → JSON
+Express 5  ── middleware: authenticate → authorize(permission) → handler → JSON
    │                                   ↘ audit({action, entity, before, after})
    ▼
 Modul domain (pure-ish, menerima storeId/branchId)
@@ -33,8 +33,8 @@ Roadmap menyebut stack "misalnya React/Vue, Node.js/PHP". Pertimbangan yang dipa
 |---|---|---|
 | Tidak boleh menambah dependensi native (di lingkungan dev tidak ada `psql`/`sqlite3`/toolchain) | **SQLite via `node:sqlite`** (built-in Node 22.5+) | Driver JS murni (`sql.js`, `better-sqlite3` butuh native build atau memori besar) dihindari. `node:sqlite` memberi API sinkron `DatabaseSync` yang justru tepat untuk beban kasir. |
 | UI kasir yang sangat interaktif (keranjang, pintasan, modal) | **React 18 + Vite** | Build cepat; `@vitejs/plugin-react`; proxy `/api` saat dev. Vue juga mungkin, tetapi komponen yang sudah ada dan pola `useApp()` mengikuti React. |
-| Backend | **Node.js + Express 4** | Runtime sama dengan frontend, satu tim satu bahasa, ekosistem middleware kecil (hanya `cors`, `express`, `multer`, `react`, `vite`). |
-| Autentikasi | Token HMAC-SHA256 bentukan sendiri (`signToken`/`verifyToken` di `server/src/auth.js`) | Tidak butuh `jsonwebtoken` (mengurangi dependensi); isi token: `userId`, `storeId`, `branchId`, `role`, `pin`, `exp`. Rahasia dari `KASIR_JWT_SECRET`, TTL dari `KASIR_TOKEN_TTL` (default 12 jam). |
+| Backend | **Node.js + Express 5** | Runtime sama dengan frontend, satu tim satu bahasa, dependensi runtime sengaja sangat sedikit: satu-satunya dependensi produksi adalah `express`; `react`, `vite`, `concurrently`, `esbuild`, dan `jsdom` hanya dipakai saat build/uji. |
+| Autentikasi | Token HMAC-SHA256 bentukan sendiri (`signToken`/`verifyToken` di `server/src/auth.js`) | Tidak butuh `jsonwebtoken` (mengurangi dependensi); isi token hanya `{ uid, role, sid (= store_id), iat, exp }` — `branchId` dan permission **tidak** ikut di token, melainkan dibaca ulang dari DB pada setiap permintaan (lihat `authenticate`). Rahasia dari `KASIR_JWT_SECRET`, TTL dari `KASIR_TOKEN_TTL` (default 12 jam). |
 | Cetak struk | Teks monospace + `window.print()` pada iframe tersembunyi | Printer termal USB/Bluetooth apa pun bekerja tanpa driver khusus; lebar 58/72/80 mm dihitung dalam kolom karakter. |
 | Laporan/ekspor | CSV dibuat server (`/api/reports/export/:kind`) | Excel/Sheets langsung terbuka; `downloadCsv` di client punya fallback `data:` URL untuk peramban tanpa `URL.createObjectURL`. |
 
@@ -46,9 +46,9 @@ Roadmap menyebut stack "misalnya React/Vue, Node.js/PHP". Pertimbangan yang dipa
 
 | Berkas | Tanggung jawab |
 |---|---|
-| `server/src/index.js` | Pembuatan aplikasi Express: `cors`, `express.json({limit:'8mb'})`, `express.static(dist)` bila `client/dist` ada, mount `/api`, JSON 404 untuk `/api/*`, error handler, `initDb()`. Berjalan sebagai API murni bila `client/dist` tidak ada. |
-| `server/src/db/schema.sql` | Skema idempoten (21 tabel, 1 view `v_stock_health`, 16 indeks) + *seed* matriks hak akses ke `settings` key `rbac`. Kolom `updated_at` diisi `DEFAULT (datetime('now'))` dan disentuh ulang saat menyimpan. Dijalankan setiap startup → tidak ada tool migrasi terpisah. |
-| `server/src/db/index.js` | `DATA_DIR` (env `KASIR_DATA_DIR`, default `server/data`), pragma WAL/`busy_timeout=5000`/`foreign_keys=ON`, `tx()`, `allRows/firstRow/exec`, `uid(prefix)`, `saveSetting/loadSetting` (JSON di tabel `settings`), `mergeDeep`. |
+| `server/src/index.js` | Pembuatan aplikasi Express: header keamanan (`X-Content-Type-Options`, `Referrer-Policy`, CSP), `express.json({ limit: '12mb' })`, `/api/health` + `/api/openapi.json` (skema OpenAPI dirakit dari daftar rute), mount `/api`, JSON 404 untuk `/api/*`, `express.static(dist)` + fallback SPA bila `client/dist` ada, dan error handler (`AppError` → JSON; pesan 5xx disenyapkan saat `NODE_ENV=production`). Berjalan sebagai API murni bila `client/dist` tidak ada. Tidak ada `cors` (aplikasi same-origin) dan tidak ada fungsi `initDb()` — skema dijalankan saat `db/index.js` diimpor. |
+| `server/src/db/schema.sql` | Skema idempoten (21 tabel, 1 view `v_stock_health`, 16 indeks) + *seed* matriks hak akses ke `settings` key `rbac`. Kolom `updated_at` diisi `DEFAULT (datetime('now'))` dan disentuh ulang saat menyimpan. Dijalankan setiap startup → tidak ada tool migrasi terpisah, dan karena `CREATE … IF NOT EXISTS` tidak mengubah tabel yang sudah ada, penambahan kolom pada rilis berikutnya perlu langkah `ALTER TABLE` manual (lihat §7). |
+| `server/src/db/index.js` | `DATA_DIR` (env `KASIR_DATA_DIR`, default `server/src/data`; `/tmp` bila `VERCEL`), pragma WAL/`busy_timeout=5000`/`foreign_keys=ON`, eksekusi `schema.sql` saat modul diimpor, `tx()`, `allRows/firstRow/exec`, `uid(prefix)`, `saveSetting/loadSetting` (JSON di tabel `settings`), `mergeDeep`. |
 | `server/src/config.js` | `DEFAULTS` untuk 5 blok setting: `store`, `tax`, `receipt`, `theme`, `pos`. `loadSetting` selalu menimpa default dengan yang tersimpan → menambah kolom/blok baru tidak perlu migrasi. |
 | `server/src/middleware/index.js` | `PUBLIC_PATHS` (4 jalur bebas token), `authenticate` (verifikasi token → `req.user/storeId/branchId/permissions`; idempoten), `requirePerm(perm|perm[])`, `loginGuard` (batas percobaan login), `setting(key)`. Error handler ada di `index.js`: `AppError` → JSON `{error, details}`; 5xx disenyapkan di produksi. |
 | `server/src/routes/*.js` | 8 router. Konvensi: `MOUNT` kosong, path lengkap sudah memuat prefiks (`/pos/...`, `/stock/...`), handler dibungkus `http()` agar rejection → 500 JSON. |
@@ -79,17 +79,17 @@ Roadmap menyebut stack "misalnya React/Vue, Node.js/PHP". Pertimbangan yang dipa
 | Variabel | Default | Fungsi |
 |---|---|---|
 | `PORT` | `4000` | Port API (dan SPA saat `client/dist` ada) |
-| `KASIR_DATA_DIR` | `server/data` | Direktori berisi `kasir.db` (+ hasil `VACUUM INTO` cadangan) |
+| `KASIR_DATA_DIR` | `server/src/data` | Direktori berisi `kasir.db`, `.jwt-secret`, dan `backups/` (hasil `VACUUM INTO`). Daftar lengkap + contoh ada di [`.env.example`](../.env.example) |
 | `KASIR_DB_PATH` | `<KASIR_DATA_DIR>/kasir.db` | Jalur lengkap berkas DB (menimpa `KASIR_DATA_DIR`) |
-| `KASIR_JWT_SECRET` | rahasia dev tetap di kode | **wajib** diganti di produksi |
-| `KASIR_TOKEN_TTL` | `12h` (detik di kode) | Masa berlaku sesi |
+| `KASIR_JWT_SECRET` | dibangkitkan otomatis & disimpan ke `<KASIR_DATA_DIR>/.jwt-secret` (mode 0600) | **wajib** diisi eksplisit di produksi |
+| `KASIR_TOKEN_TTL` | `43200` | Masa berlaku sesi **dalam detik** (43200 = 12 jam) |
 | `NODE_ENV` | — | `production` → pesan error internal disembunyikan dari klien |
 
 ## 6. Konvensi yang dijaga di seluruh kode
 
-* Uang selalu **integer Rupiah** (kolom `*_price`, `*_total`, `amount`, `paid_amount`); persentase memakai `_pct` dan boleh desimal.
+* Uang selalu **dibulatkan ke Rupiah penuh** sebelum disimpan (total di `Math.round`, `pricing.js`); kolom `*_price`, `*_total`, `amount`, `paid_amount` bertipe `REAL` di SQLite, jadi nilai non-bulat secara teknis masih bisa masuk — API memakai integer dan klien tidak boleh mengirim pecahan. Persentase memakai `_pct` dan boleh desimal. Lihat catatan risiko di [10-rilis-beta.md](10-rilis-beta.md).
 * Setiap gerakan stok punya `ref_type` + `ref_id` → dapat ditelusuri ke struk/PO/opname.
-* `movement_type` dibatasi CHECK di skema: `sale_out`, `bom_consume`, `purchase_in`, `production_in`, `return_in`, `adjustment`, `transfer`. Pembatalan & retur memakai `return_in` untuk gerakan keluar (`sale_out`/`bom_consume`) dan `adjustment` untuk sisanya.
+* `movement_type` dibatasi CHECK di skema: `sale_out`, `bom_consume`, `purchase_in`, `production_in`, `return_in`, `adjustment`, `transfer` (cadangan, belum ditulis kode mana pun — lihat §7). Pembatalan & retur memakai `return_in` untuk gerakan keluar (`sale_out`/`bom_consume`) dan `adjustment` untuk sisanya.
 * Endpoint tulis selalu menyebut permission-nya lewat `auth('…')`; aksi sensitif dicatat dengan `audit({…, before, after})`.
 * Field rahasia (`password_hash`, `pin_hash`, `token`, `secret`) tidak pernah ikut dalam respons API — diperiksa oleh `server/scripts/qa-simulasi.js` §4.
 * Bahasa UI & dokumen: Indonesia.
@@ -97,6 +97,6 @@ Roadmap menyebut stack "misalnya React/Vue, Node.js/PHP". Pertimbangan yang dipa
 ## 7. Portabilitas & jalur upgrade
 
 * **Pindah ke PostgreSQL/MySQL**: semua query berada di `server/src/**` dan `schema.sql`; yang perlu disesuaikan hanya `AUTOINCREMENT`/ID teks (dibangkitkan aplikasi, jadi netral), `datetime('now')`, `strftime`, `INSERT OR IGNORE`, dan `VACUUM INTO` (cadangan; `db.backup()` tidak tersedia di `node:sqlite`). Lapisan domain (`pricing.js`, `bom.js`, `stockhealth.js`) tidak menyentuh sintaks SQLite.
-* **Multi-kasir**: `stock_movements` + `transactions` sudah menyimpan `store_id`/`branch_id`, sehingga pemisahan per cabang dapat dilanjutkan menjadi replikasi; `POST /api/stock/transfer` sudah tersedia untuk memindahkan stok antar cabang.
+* **Multi-kasir**: `stock_movements` + `transactions` sudah menyimpan `store_id`/`branch_id`, jadi jejak per cabang sudah ada. Perlu dicatat: **belum ada pemisahan stok per cabang** (`items.stock_qty` satu nilai per toko), belum ada filter cabang di laporan, dan **belum ada endpoint transfer/mutasi antar cabang** — nilai `transfer` sudah diizinkan di CHECK `movement_type` tetapi belum ada yang menuliskannya. Menuju multi-cabang nyata berarti menambah `item_stock(store_id, branch_id, item_id)` atau kolom `branch_id` pada agregat stok.
 * **Menambah laporan**: tambah SQL agregat di `routes/reports.js` + `EXPORTS` untuk CSV; client tinggal memanggil `get('/reports/…')`.
 * **Menambah blok pengaturan**: tambah default di `config.js DEFAULTS` → otomatis terbaca `GET /api/settings` dan dapat disimpan `PUT /api/settings/:key` (tanpa migrasi).

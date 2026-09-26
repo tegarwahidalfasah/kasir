@@ -14,6 +14,11 @@ selama **4 minggu**, dengan 1 pendampingan per toko. Keluaran yang diharapkan: k
 | Laporan: penjualan harian, per jam, produk, kasir, metode bayar; pergerakan stok; pemakaian bahan & estimasi habis; valuasi persediaan; ekspor CSV | Laporan berjadwal (email), BI/kustom query builder |
 | Kustomisasi tema, logo, urutan menu, blok teks struk, pajak & diskon dinamis, metode pembayaran | Desainer struk visual drag-and-drop, lebih dari 1 layout per toko |
 | Cadangan harian `VACUUM INTO` + verifikasi + restore (CLI & endpoint) | enkripsi DB at-rest, point-in-time recovery (WAL replay) |
+| Pencarian & penyimpanan `barcode`/`sku` per barang | Alur pindai: pengait tombol Enter dari pemindai USB (kini pindai = menyaring daftar, kasir masih menekan item) |
+| Satu metode bayar per transaksi (tunai/QRIS/kartu/transfer) | Pembayaran terbagi (split payment) — tabel `transaction_payments` baru terisi satu baris |
+| Cetak struk lewat `window.print()` (58/72/80 mm) | Cetak langsung ke printer termal (ESC/POS, auto-cut, kick drawer) tanpa dialog peramban |
+| Data pelanggan seadanya (`customer_name`/`customer_phone` di struk) | Master pelanggan, riwayat belanja per pelanggan, poin/loyalti, member |
+| Kasir per perangkat dengan PIN | Shift kas: buka/tutup kas, kas masuk-keluar, rekap selisih kas per kasir |
 
 ## 2. Kriteria penerimaan beta (harus terpenuhi sebelum toko pertama masuk)
 
@@ -32,6 +37,31 @@ Belum (harus selesai sebelum undangan dikirim):
 - [ ] Kata sandi akun seed diganti/dinonaktifkan untuk pengguna beta (dok 09 §9).
 - [ ] `KASIR_JWT_SECRET` produksi + `NODE_ENV=production` + proxy TLS (bila akses keluar LAN).
 - [ ] Formulir umpan balik & kanal darurat (nomor WA penanggap) disepakati, SLA tanggapan ≤ 4 jam kerja.
+
+### Risiko teknis yang diketahui (per 26 Sep 2026)
+
+Ditemukan saat penelusuran kode setelah rilis 0.1.0. Belum diperbaiki karena masing-masing
+menyentuh data/format yang sudah dipakai — perlu keputusan pemilik sebelum diubah:
+
+- **Zona waktu toko belum diterapkan pada perhitungan tanggal.** `stores.timezone` disimpan & dapat
+  disunting di layar Pengaturan, tetapi belum dibaca oleh mesin tanggal mana pun: `created_at` diisi
+  `datetime('now')` (UTC), laporan harian memakai `GROUP BY date(created_at)` (UTC), nomor struk dan
+  filter bawaan `from`/`to` memakai `toISOString()` (UTC), sedangkan laporan per jam memakai
+  `'localtime'` (zona waktu **server**, bukan toko). Akibatnya pada server ber-TZ UTC, transaksi
+  pukul 00:00–07:00 WIB masuk ke tanggal sebelumnya — tepat pada jam tutup/buka toko.
+  Uji manual: transaksi 27 Sep 00:30 WIB tampil sebagai 26 Sep dan berprefiks `KS20260926-`.
+- **Belum ada migrasi skema bertahap.** `schema.sql` bersifat idempoten (`CREATE … IF NOT EXISTS`)
+  dan `PRAGMA user_version` belum dipakai, jadi penambahan kolom pada v0.2 **tidak** mengubah DB
+  produksi yang sudah berisi data; kode baru akan gagal dengan `no such column`. Perlu langkah
+  `ALTER TABLE` bernomor versi sebelum upgrade toko pertama.
+- **Kolom uang bertipe `REAL`, bukan `INTEGER` sen.** Nilai dibulatkan ke Rupiah penuh
+  (`Math.round`) sehingga data seed masih bersih (dicek: `SUM(grand_total)` = bilangan bulat),
+  tetapi secara akuntansi tipe ini menyimpan risiko pembulatan jangka panjang.
+- **Klaim multi-cabang belum sepenuhnya nyata**: stok belum dipisah per cabang, laporan belum
+  dapat difilter per cabang, dan belum ada endpoint transfer/mutasi (lihat dok 01 §7).
+- **Dua advisory dependensi (dev)**: `esbuild` ≤ 0.24.2 dan `vite` ≤ 6.4.2 (GHSA-67mh-4wv8-2f99,
+  dev server dapat diakses situs lain). Hanya berdampak pada `npm run dev`, bukan berkas yang
+  dikirim ke peramban toko; perbaikan menuntut kenaikan Vite ke 6/7.
 
 ## 3. Gelombang & jadwal
 
