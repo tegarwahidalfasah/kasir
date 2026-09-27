@@ -13,7 +13,44 @@ Panduan ini menggantikan cara lama Vercel + SQLite `/tmp`. Frontend dan API teta
 
 Jangan gunakan token organisasi sebagai token database, jangan kirim token ke chat, dan jangan taruh token dalam variabel `VITE_*`. Untuk Preview dan Production gunakan **database dan secret terpisah** agar demo tidak menyentuh data toko.
 
-## 2. Isi skema dan akun satu kali dari komputer sendiri
+## 2A. Cara paling mudah: langsung dari dashboard Vercel (tanpa terminal lokal)
+
+Khusus **Preview demo privat**, tersedia jalur opt-in baru. Ini adalah pengecualian terkontrol
+untuk setup saat build, bukan auto-seed saat API berjalan. Tidak boleh dipakai untuk Production.
+
+1. Gunakan database Turso **khusus demo**, bukan database toko/Production.
+2. Aktifkan **Settings → Deployment Protection → Vercel Authentication** untuk Preview sebelum
+   setup. Skrip tidak dapat memverifikasi status perlindungan ini; operator wajib mengaktifkannya.
+3. Pada **Environment Variables**, pilih scope **Preview saja** dan isi:
+
+   | Nama | Nilai |
+   | --- | --- |
+   | `TURSO_DATABASE_URL` | URL database demo Turso |
+   | `TURSO_AUTH_TOKEN` | Token baca/tulis database demo |
+   | `KASIR_JWT_SECRET` | Secret tetap minimal 32 karakter |
+   | `NODE_ENV` | `production` |
+   | `KASIR_SETUP_DEMO` | `1` (izin eksplisit mengisi DB demo saat build) |
+
+4. Hapus `KASIR_AUTOSEED` serta override `NODE_ENV=development` lama. Biarkan `VERCEL` dan
+   `VERCEL_ENV` diisi otomatis oleh platform, jangan ditulis manual.
+5. Buka **Deployments** dan pilih deployment **Preview** dari branch `arena/01a0e0d6-kasir`
+   / PR #6, dengan kode setup-preview terbaru. Redeploy. Jangan redeploy deployment commit lama:
+   build itu belum mengenali `KASIR_SETUP_DEMO`. Build Command tetap `npm run build`.
+6. Di Build Logs cari **`[demo-setup] Akun demo berhasil dibuat`**. Jika database sudah berisi
+   toko/pengguna, setup tidak menambah akun atau mengganti password. Jika belum ada akun demo
+   di DB tersebut, gunakan DB demo baru yang kosong, bukan memaksa menimpa data.
+7. Setelah build berhasil, **hapus `KASIR_SETUP_DEMO`** dari Preview. Tidak perlu menjalankan
+   setup lagi; akun dan data tetap ada di Turso. Penghapusan ini berlaku untuk build berikutnya.
+8. Klik **Visit** pada deployment Preview baru, lalu periksa `/api/health`: `database` dan
+   `db_file` harus `turso`. Login `budi / rahasia123` atau tab PIN Kasir `dewi / 4444`.
+   **Bukan domain utama Production** `kasir-server-nine.vercel.app` selama PR belum di-merge.
+
+Build normal tanpa flag tidak membuka database. Flag di Production/Development/lokal ditolak
+sebelum koneksi database; kegagalan setup menghentikan build. Setup tetap satu transaksi dan
+idempoten, jadi flag yang tidak sengaja tertinggal tidak mereset ID akun/password. Jika build
+frontend gagal setelah setup sukses, data Turso tetap ada; perbaiki build, jangan reset DB.
+
+## 2B. Alternatif: isi skema dan akun dari komputer sendiri
 
 Gunakan kode terbaru dari branch perubahan ini. Di folder akar repositori, jalankan `npm ci` dengan Node.js 22.x terbaru atau 24.x.
 
@@ -64,7 +101,7 @@ Tidak membuat akun `budi`/`dewi` atau PIN publik. Hapus variabel `KASIR_OWNER_*`
 - Tanpa `--demo`/`--owner`: hanya skema dan migrasi (`npm run db:setup`).
 - Aman diulang: tidak menghapus data, mengganti ID pengguna, mereset password, atau mengisi akun demo jika sudah ada toko/pengguna.
 - Skema dan data awal berada dalam satu transaksi write; kegagalan menyebabkan rollback. Pemeriksaan DB kosong berada di dalam transaksi, bukan check-then-insert lintas-request.
-- Tidak ada endpoint web untuk setup/reset/seed. **Jangan tambahkan setup ke Build Command.**
+- Tidak ada endpoint web untuk setup/reset/seed. Jangan menambahkan perintah setup manual ke Build Command. Untuk demo via dashboard gunakan jalur Preview yang dibatasi pada §2A.
 - Tidak memindahkan data dari `/tmp` deployment lama. Peralihan ini membuat DB baru; data demo lama tidak otomatis ikut.
 
 ## 3. Atur Vercel
@@ -96,11 +133,13 @@ Buat secret JWT bila belum ada: `openssl rand -hex 32`. Alternatif jika Node ter
 node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 ```
 
+Jika memakai jalur dashboard §2A, `KASIR_SETUP_DEMO=1` hanya boleh ada pada Preview dan dihapus setelah setup berhasil.
+
 **Hapus pengaturan lama:** `KASIR_AUTOSEED`, `KASIR_ALLOW_SEED`, override `NODE_ENV=development`, `KASIR_DATA_DIR`, `KASIR_DB_PATH`, dan `KASIR_SECRET_FILE`. Auto-seed tidak berlaku pada DB online. Jangan menyalin `KASIR_TRUST_PROXY=loopback` dari contoh VPS; biarkan default Vercel jika belum mengatur proxy sendiri.
 
 Dev dependencies (Vite/esbuild) diperlukan saat build walaupun `NODE_ENV=production`; karena itu Install Command menyertakan `--include=dev`.
 
-Deploy/redeploy **setelah** setup berhasil. `vercel.json` memasukkan skema dan worker SDK yang dibundle oleh `build:api`, serta memberi waktu fungsi maksimum 60 detik. Tetap gunakan Build Command akar, bukan hanya `vite build`, agar file worker tidak tertinggal.
+Untuk jalur manual, deploy/redeploy **setelah** setup berhasil. Untuk jalur dashboard §2A, build Preview mengerjakan setup opt-in sebelum membangun aplikasi. `vercel.json` memasukkan skema dan worker SDK yang dibundle oleh `build:api`, serta memberi waktu fungsi maksimum 60 detik. Tetap gunakan Build Command akar, bukan hanya `vite build`, agar file worker tidak tertinggal.
 
 ## 4. Verifikasi deployment
 
@@ -116,7 +155,7 @@ Jika tetap keluar, lihat Network → respons 401: `Akun tidak aktif` berarti ID 
 ## 5. Pemeliharaan dan batas implementasi
 
 - **Backup/restore:** gunakan fasilitas ekspor, backup, atau pemulihan Turso sesuai paket. Uji restore ke DB terpisah sebelum memakai data penting. Tombol download backup SQLite/API mengembalikan 409 dalam mode remote. Skrip backup/reset/maintenance file lokal juga ditolak; jangan mengira `/tmp` merupakan backup DB online.
-- **Migrasi:** jalankan `npm run db:setup` dari komputer operator sebelum deployment yang mengubah skema. Runtime memeriksa versi skema dan gagal tertutup bila DB belum siap; tidak menjalankan DDL/seed pada setiap cold start.
+- **Migrasi:** jalankan `npm run db:setup` dari komputer operator sebelum deployment yang mengubah skema. Runtime memeriksa versi skema dan gagal tertutup bila DB belum siap; tidak menjalankan DDL/seed pada setiap cold start. Setup build pada §2A hanya untuk demo Preview.
 - **Stok antar-instance:** API mengirim `stock_transport: "poll"`. Klien tidak membuka SSE yang hanya menjangkau satu proses. POS menarik stok tiap 60 detik; identitas/permission/katalog ringan tiap 45 detik. Validasi stok saat pembayaran tetap dari DB dalam transaksi, bukan angka layar.
 - **Adapter sinkron transisional:** domain lama memakai fungsi sinkron. SDK HTTP berjalan dalam worker terpisah; main thread menunggu hasil agar transaksi sinkron tidak disela request lain. Setiap proses menangani query secara serial, tiap query mempunyai round-trip jaringan. Ini **bukan** adapter async ber-throughput tinggi. Perlu profiling pada region nyata, pengurangan query/batching, dan refactor async sebelum beban toko besar. Jangan klaim siap produksi hanya karena login berhasil.
 - **Transaksi:** `BEGIN IMMEDIATE` dipetakan ke transaksi write SDK dengan stream yang sama hingga COMMIT/ROLLBACK. Tidak memakai batch terpisah untuk setiap langkah transaksi dan tidak mengunduh ulang file SQLite. Kunci tulis dibagi semua instance oleh database.
@@ -130,6 +169,7 @@ Jika tetap keluar, lihat Network → respons 401: `Akun tidak aktif` berarti ID 
 | Pesan/gejala | Tindakan |
 | --- | --- |
 | Vercel memerlukan `TURSO_DATABASE_URL` dan `TURSO_AUTH_TOKEN` | Isi keduanya pada scope yang benar. Tidak ada fallback `/tmp`. |
+| `KASIR_SETUP_DEMO hanya diizinkan` | Flag harus Preview saja. Hapus dari Production/Development; jangan memalsukan `VERCEL_ENV`. |
 | `Database Turso belum siap` | Pastikan URL/token benar, token belum kedaluwarsa, DB dapat diakses, dan `npm run db:setup` sudah berhasil. Periksa penyebab di Runtime Logs tanpa membagikan token. |
 | `KASIR_JWT_SECRET wajib diisi` | Isi secret tetap di scope deployment dan redeploy. Berlaku juga saat `NODE_ENV` bukan production untuk DB online. |
 | Worker file missing/timeout sejak cold start | Gunakan Build Command `npm run build` dan `vercel.json` dari akar repositori, bukan `client` saja. |

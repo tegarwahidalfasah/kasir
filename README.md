@@ -104,7 +104,12 @@ Dua jalur tersedia:
 > Deployment online sekarang **wajib** memakai `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, dan
 > `KASIR_JWT_SECRET`; salah konfigurasi gagal tertutup, bukan fallback ke data sementara.
 
-Ringkasan Vercel:
+**Ingin langsung mencoba dari dashboard Vercel tanpa terminal lokal?** Ikuti
+[docs/12 §2A](docs/12-vercel-turso.md#2a-cara-paling-mudah-langsung-dari-dashboard-vercel-tanpa-terminal-lokal):
+aktifkan `KASIR_SETUP_DEMO=1` pada **Preview privat saja**, redeploy kode terbaru, lalu hapus flag
+setelah setup sukses. Database harus khusus demo dan Deployment Protection aktif.
+
+Ringkasan Vercel (jalur setup manual):
 
 1. Buat DB libSQL di Turso; simpan URL/token di `.env` **lokal**, jangan bagikan atau commit.
 2. Jalankan `npm ci`, kemudian `npm run db:setup -- --demo` untuk **demo privat** atau

@@ -185,7 +185,9 @@ seed membuat ID akun acak sehingga token dari instance A ditolak instance B. Sec
 - Skema dan akun dibuat eksplisit sekali lewat `npm run db:setup -- --demo` (demo privat)
   atau `npm run db:setup -- --owner` (akun pribadi). Tidak ada seed runtime/endpoint setup publik.
 - Jangan lagi mengubah `NODE_ENV` menjadi `development`; gunakan `production` dan hapus `KASIR_AUTOSEED`.
-- Setup akun tidak dijalankan di Build Command. `npm run build` membuat SPA dan bundle worker HTTP SDK.
+- Default build tidak mengisi akun. Khusus demo Preview privat tanpa terminal lokal,
+  `KASIR_SETUP_DEMO=1` mengizinkan setup idempoten saat build; hapus flag setelah sukses.
+  Production ditolak. Lihat docs/12 §2A. `npm run build` juga membuat SPA dan bundle worker HTTP SDK.
 - Scope Preview dan Production sebaiknya memakai database serta secret berbeda. Lindungi demo dengan Deployment Protection.
 - Backup/reset/restore file lokal pada §1–§9 **tidak berlaku untuk Turso**. Gunakan fasilitas penyedia database.
 - Stok antar-instance memakai polling; sesi memakai ID pengguna yang sama dari DB bersama.
