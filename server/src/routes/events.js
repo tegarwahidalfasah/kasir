@@ -12,6 +12,7 @@
 //  token TIDAK pernah muncul di URL/query string (bisa bocor lewat log proxy).
 // ============================================================================
 import express from 'express';
+import { STOCK_TRANSPORT } from '../db/index.js';
 import { subscribe, sseFrame } from '../events.js';
 import { catalogVersion } from '../catalog.js';
 
@@ -21,6 +22,7 @@ const MOUNT = ''; // path sudah memuat prefiks; mount di index.js memakai '/api'
 const HEARTBEAT_MS = 25000;
 
 router.get(MOUNT + '/events', (req, res) => {
+  if (STOCK_TRANSPORT !== 'sse') return res.status(204).end();
   res.status(200);
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
   res.setHeader('Cache-Control', 'no-cache, no-transform');

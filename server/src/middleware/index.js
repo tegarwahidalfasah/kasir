@@ -33,7 +33,7 @@ export function authenticate(req, res, next) {
   req.branchId = user.branch_id;
   // zona waktu toko untuk "hari bisnis" (laporan, nomor struk) — docs/11 §4
   req.timezone = storeTimezone(req.storeId);
-  req.tz = storeTimezone(req.storeId);
+  req.tz = req.timezone;
   req.roleMatrix = loadRoleMatrix(loadSetting, req.storeId);
   req.permissions = permissionsFor(user.role, req.roleMatrix);
   next();

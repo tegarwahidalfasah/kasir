@@ -2,7 +2,7 @@
 //  Rute Autentikasi + Bootstrap (user, permission, setting, tema, menu)
 // ===========================================================================
 import express from 'express';
-import { allRows, firstRow, exec, loadSetting } from '../db/index.js';
+import { allRows, firstRow, exec, loadSetting, STOCK_TRANSPORT } from '../db/index.js';
 import { authenticate, loginGuard } from '../middleware/index.js';
 import { catalogVersion } from '../catalog.js';
 import { authenticate as login, audit, signToken, verifyPassword, hashPassword, bumpAttempt, clearAttempts, bumpUserAttempt, clearUserAttempts } from '../auth.js';
@@ -89,6 +89,7 @@ router.get(MOUNT + '/bootstrap', auth(), http((req, res) => {
     roles: Object.entries(ROLE_PRESETS).map(([key, v]) => ({ key, ...v, permissions: req.roleMatrix?.roles?.[key] || v.permissions })),
     permission_list: PERMISSIONS,
     alerts_unread: alertCount,
+    stock_transport: STOCK_TRANSPORT,
     catalog_version: catalogVersion(storeId),
     server_time: new Date().toISOString(),
   });
@@ -116,6 +117,7 @@ router.get(MOUNT + '/bootstrap/lite', auth(), http((req, res) => {
     store: { ...DEFAULTS.store, ...store, name: store.name || DEFAULTS.store.name },
     settings: { theme: loadSetting(storeId, 'theme', DEFAULTS.theme) },
     alerts_unread: alertCount,
+    stock_transport: STOCK_TRANSPORT,
     catalog_version: catalogVersion(storeId),
     server_time: new Date().toISOString(),
   });

@@ -53,7 +53,7 @@ process.on('exit', cleanup);   // jaminan terakhir di jalur keluar mana pun
 try {
   let api = REUSE;
   if (!REUSE) {
-    const env = { ...process.env, KASIR_DATA_DIR: DATA_DIR, PORT: String(PORT), NODE_NO_WARNINGS: '1' };
+    const env = { ...process.env, TURSO_DATABASE_URL: '', TURSO_AUTH_TOKEN: '', VERCEL: '', KASIR_DB_PATH: '', NODE_ENV: 'test', KASIR_DATA_DIR: DATA_DIR, PORT: String(PORT), NODE_NO_WARNINGS: '1' };
     const seed = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(ROOT, 'server/scripts/seed.js'), '--force', '--quiet'], { env, cwd: ROOT });
     await wait(seed, 'KASIR_READY');
     child = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(ROOT, 'server/src/index.js')], { env, cwd: ROOT });

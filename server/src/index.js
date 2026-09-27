@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { api } from './routes/index.js';
 import { assertJwtSecret } from './auth.js';
-import { DB_FILE, firstRow } from './db/index.js';
+import { DB_FILE, firstRow, IS_REMOTE } from './db/index.js';
 import { AppError } from './lib/http.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -67,11 +67,14 @@ export function createApp() {
     let counts = { items: 0, sales: 0, movements: 0 };
     try {
       counts = firstRow(`SELECT (SELECT COUNT(*) FROM items) AS items, (SELECT COUNT(*) FROM transactions) AS sales, (SELECT COUNT(*) FROM stock_movements) AS movements`) || counts;
-    } catch { /* DB might be initializing */ }
+    } catch {
+      return res.status(503).json({ ok: false, service: 'kasir-api', error: 'Database tidak dapat dihubungi' });
+    }
     res.json({
       ok: true, service: 'kasir-api', version: '0.1.0',
       uptime_s: Math.round((Date.now() - started) / 1000),
-      node: process.version, db_file: path.relative(path.join(__dirname, '..', '..'), DB_FILE), ...counts,
+      node: process.version, database: IS_REMOTE ? 'turso' : 'sqlite',
+      db_file: IS_REMOTE ? 'turso' : path.relative(path.join(__dirname, '..', '..'), DB_FILE), ...counts,
     });
   };
 

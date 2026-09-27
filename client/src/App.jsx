@@ -37,8 +37,16 @@ export function App() {
 }
 
 function Shell() {
-  const { status } = useApp();
+  const { status, retrySession, logout } = useApp();
   if (status === 'anon') return <Suspense fallback={<Loading />}><LoginPage /></Suspense>;
+  if (status === 'error') return (
+    <div className="login-wrap"><div className="login-card">
+      <h2>Belum dapat memuat toko</h2>
+      <p>Koneksi server atau database sedang bermasalah. Sesi Anda disimpan; coba lagi tanpa login ulang.</p>
+      <Button onClick={retrySession}>Coba lagi</Button>{' '}
+      <Button variant="ghost" onClick={logout}>Keluar</Button>
+    </div></div>
+  );
   if (status === 'loading') return <div className="loading" style={{ height: '100vh' }}><span className="spinner" /> Memuat toko…</div>;
   return <Workspace />;
 }

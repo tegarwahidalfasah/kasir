@@ -66,7 +66,7 @@ const waitFor = async (child, marker, ms = 60000) => {
   return buf;
 };
 
-const env = { ...process.env, KASIR_DATA_DIR: DATA_DIR, PORT: String(PORT), KASIR_JWT_SECRET: 'qa-secret-bukan-produksi', NODE_NO_WARNINGS: '1' };
+const env = { ...process.env, TURSO_DATABASE_URL: '', TURSO_AUTH_TOKEN: '', VERCEL: '', KASIR_DB_PATH: '', NODE_ENV: 'test', KASIR_DATA_DIR: DATA_DIR, PORT: String(PORT), KASIR_JWT_SECRET: 'qa-secret-bukan-produksi', NODE_NO_WARNINGS: '1' };
 say(`\n🧪 QA simulasi — pangkalan data sementara: ${DATA_DIR}\n`);
 
 // 1) seed demo (data historis + BOM + alert) lalu nyalakan server

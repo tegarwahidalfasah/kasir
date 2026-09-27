@@ -13,7 +13,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { DB_FILE, DATA_DIR, db } from '../src/db/index.js';
+import { DB_FILE, DATA_DIR, db, IS_REMOTE } from '../src/db/index.js';
+
+if (IS_REMOTE) throw new Error('Perintah pemeliharaan file lokal tidak tersedia untuk Turso. Gunakan backup/restore dari penyedia database.');
 
 const argv = process.argv.slice(2);
 const arg = (name, def = null) => {

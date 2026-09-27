@@ -1,8 +1,8 @@
 // ===========================================================================
-//  Lapisan akses database: node:sqlite (bawaan Node >= 22.5, tanpa native build)
+//  Lapisan akses database: node:sqlite lokal atau Turso/libSQL bersama via HTTP
 //  - WAL + foreign_keys ON + busy_timeout  -> aman untuk 1 toko multi-kasir
 //  - tx() dipakai SEMUA operasi yang menyentuh stok (ledger atomik)
-//  - Skema di schema.sql, dijalankan idempoten saat boot
+//  - Lokal: skema/migrasi saat boot. Online: provisioning eksplisit db:setup.
 // ===========================================================================
 import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
@@ -10,9 +10,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import { beginBatch, commitBatch, abortBatch } from '../events.js';
+import { remoteConfig, SCHEMA_VERSION } from './remote-config.js';
+import { LibsqlSync } from './libsql-sync.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const DATA_DIR = process.env.KASIR_DATA_DIR || (process.env.VERCEL ? '/tmp' : path.join(__dirname, '..', 'data'));
+const remote = remoteConfig();
+export const IS_REMOTE = Boolean(remote);
+export const STOCK_TRANSPORT = (IS_REMOTE || process.env.VERCEL) ? 'poll' : 'sse';
 const DB_PATH = process.env.KASIR_DB_PATH || path.join(DATA_DIR, 'kasir.db');
 
 let schema = '';
@@ -31,15 +36,21 @@ for (const p of candidateSchemaPaths) {
   } catch { /* continue */ }
 }
 
-try {
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-} catch { /* noop */ }
-
-export const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode = WAL;');
-db.exec('PRAGMA foreign_keys = ON;');
-db.exec('PRAGMA busy_timeout = 5000;');
-if (schema) {
+if (!schema) throw new Error('Skema database tidak ditemukan: server/src/db/schema.sql');
+if (!IS_REMOTE) fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+export const db = IS_REMOTE ? new LibsqlSync(remote) : new DatabaseSync(DB_PATH);
+if (IS_REMOTE) {
+  try {
+    const version = db.prepare('SELECT version FROM kasir_schema WHERE id = 1').get()?.version;
+    if (version !== SCHEMA_VERSION) throw new Error('schema version mismatch');
+  } catch (err) {
+    db.close();
+    throw new Error('Database Turso belum siap. Periksa koneksi/token lalu jalankan npm run db:setup sebelum deploy.', { cause: err });
+  }
+} else {
+  db.exec('PRAGMA journal_mode = WAL;');
+  db.exec('PRAGMA foreign_keys = ON;');
+  db.exec('PRAGMA busy_timeout = 5000;');
   db.exec(schema);
 }
 
@@ -59,6 +70,7 @@ const ADDITIVE_COLUMNS = [
 
 /** Tambahkan kolom yang belum ada; mengembalikan daftar "tabel.kolom" yang baru dibuat. */
 export function migrateSchema() {
+  if (IS_REMOTE) return []; // Migrasi online hanya lewat db:setup, bukan tiap cold start.
   const applied = [];
   for (const [table, column, ddl] of ADDITIVE_COLUMNS) {
     let info = [];
@@ -75,7 +87,8 @@ if (appliedMigrations.length) {
   console.log(`[db] migrasi aditif diterapkan: ${appliedMigrations.join(', ')}`);
 }
 
-export const DB_FILE = DB_PATH;
+// Label aman untuk health/log; jangan bocorkan URL/token DB.
+export const DB_FILE = IS_REMOTE ? 'turso' : DB_PATH;
 
 /** Jalankan `fn()` di dalam transaksi SQLite (atomic + rollback saat error). */
 export function tx(fn) {
@@ -85,6 +98,7 @@ export function tx(fn) {
   beginBatch();
   try {
     const out = fn(db);
+    if (out && typeof out.then === 'function') throw new Error('tx() memerlukan callback sinkron.');
     db.exec('COMMIT');
     commitBatch();
     return out;

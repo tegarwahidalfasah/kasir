@@ -14,3 +14,6 @@ client/tests/.cache/
 .env.local
 .DS_Store
 coverage/
+
+# Worker SDK dibundle oleh npm run build:api untuk Vercel
+server/src/db/libsql-worker.bundle.cjs

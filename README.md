@@ -42,8 +42,8 @@ Detail tiap fase ada di folder [`docs/`](docs/).
 | Lapisan | Pilihan | Alasan |
 |---|---|---|
 | Runtime & API | **Node.js ≥ 22.5** + Express 5 | Satu bahasa (JS) di seluruh stack; LTS aktif |
-| Database | **SQLite** lewat modul bawaan `node:sqlite` | Nol dependensi native / nol servis tambahan → deployment cukup 1 proses Node + 1 berkas DB; transaksi ACID + `BEGIN IMMEDIATE` |
-| Migrasi skema | `schema.sql` idempoten (`CREATE … IF NOT EXISTS`) + **migrasi aditif kolom** (`migrateSchema()` di `server/src/db/index.js`) | Skema adalah sumber kebenaran & aman dijalankan berulang saat startup; kolom baru pada DB lama ditambahkan otomatis (`ALTER TABLE … ADD COLUMN`) tanpa alat terpisah. Belum ada migrasi bernomor/rollback atau perubahan yang membangun ulang tabel (lihat [docs/01](docs/01-arsitektur.md) §7) |
+| Database | **SQLite lokal** (`node:sqlite`) atau **Turso/libSQL** (`@libsql/client/http`) | Lokal/VPS memakai file persisten; Vercel memakai DB bersama melalui HTTP dengan transaksi write. Lihat [docs/12](docs/12-vercel-turso.md). |
+| Migrasi skema lokal | `schema.sql` idempoten (`CREATE … IF NOT EXISTS`) + **migrasi aditif kolom** (`migrateSchema()` di `server/src/db/index.js`) | Skema adalah sumber kebenaran & aman dijalankan berulang saat startup; kolom baru pada DB lama ditambahkan otomatis (`ALTER TABLE … ADD COLUMN`) tanpa alat terpisah. Belum ada migrasi bernomor/rollback atau perubahan yang membangun ulang tabel (lihat [docs/01](docs/01-arsitektur.md) §7) |
 | Web frontend | **React 18 + Vite** (SPA) | Build cepat, dev server dengan proxy `/api`, cocok untuk UI interaktif seperti POS |
 | State & data client | Context store buatan sendiri (`client/src/store.jsx`) + helper `api` (`useApi`) | Kebutuhan state aplikasi kecil; menghindari dependensi tambahan |
 | Styling | CSS vanilla + token (design tokens) di `:root` | Tema/logo/menu bisa diganti user lewat `settings.theme` tanpa rebuild |
@@ -51,8 +51,7 @@ Detail tiap fase ada di folder [`docs/`](docs/).
 | Cetak struk | Garis teks monospace (58/72/80 mm) + `window.print()` lewat iframe tersembunyi | Struk termal tidak butuh driver/vendor SDK |
 | Uji | Harness tes bawaan `node:test`/assert (unit backend), smoke UI jsdom, skrip simulasi HTTP (QA) | Tidak perlu framework UI berat |
 
-> **Catatan stack:** tidak ada PHP/Composer, PostgreSQL, atau CLI SQLite di lingkungan pengembangan, sehingga
-> keputusan memakai `node:sqlite` bawaan sekaligus menjadi batasan keras: **tanpa dependensi native**.
+> **Catatan stack:** runtime SQLite lokal memakai modul bawaan Node. Runtime Turso memakai SDK HTTP yang dibundle tanpa driver native. Pengujian provisioning juga memakai driver SQLite dari SDK libSQL.
 
 ## Mulai cepat
 
@@ -94,41 +93,39 @@ npm run maintenance -- restore <berkas> --yes
 
 ## Deployment
 
-**Produksi = VPS / systemd** (dokumen lengkap: [`docs/09-deployment-dan-maintenance.md`](docs/09-deployment-dan-maintenance.md),
-berkas siap pakai di [`ops/`](ops/): unit systemd yang di-harden, contoh Caddy/nginx, crontab cadangan).
+Dua jalur tersedia:
 
-> ⚠️ **Vercel hanya untuk demo/pratinjau UI, bukan untuk mencatat penjualan sungguhan.**
-> Di lingkungan serverless, SQLite berada di `/tmp` yang **sementara dan per-instance** (transaksi hilang
-> saat container recycle). Sejak 26 Sep 2026 API juga **menolak start tanpa `KASIR_JWT_SECRET`** di
-> `NODE_ENV=production`, dan **auto-seed data demo dimatikan** kecuali diminta eksplisit dengan
-> `KASIR_AUTOSEED=1` (tetap tidak berlaku bila `NODE_ENV=production`). Rincian & cara mengaktifkan
-> kembali untuk demo privat: [`docs/09` §10](docs/09-deployment-dan-maintenance.md) dan
-> [`docs/11` §10](docs/11-analisis-2026-09-17.md).
+- **Vercel + Turso/libSQL**: frontend dan API tetap di Vercel, akun/stok/transaksi di database bersama.
+  Panduan langkah demi langkah: **[docs/12-vercel-turso.md](docs/12-vercel-turso.md)**.
+- **VPS/systemd + SQLite lokal persisten**: [docs/09](docs/09-deployment-dan-maintenance.md) dan berkas [ops/](ops/).
 
-Repositori ini telah dikonfigurasi untuk deploy langsung ke **Vercel** (Vite SPA + Express Serverless API):
+> **Perubahan penting:** Vercel tidak lagi memakai SQLite `/tmp` atau auto-seed setiap cold start.
+> DB yang berbeda antar-instance membuat pengguna langsung logout meskipun secret JWT sama.
+> Deployment online sekarang **wajib** memakai `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, dan
+> `KASIR_JWT_SECRET`; salah konfigurasi gagal tertutup, bukan fallback ke data sementara.
 
-1. **Push ke Git / GitHub**:
-   ```bash
-   git add .
-   git commit -m "Konfigurasi deployment Vercel"
-   git push
-   ```
+**Ingin langsung mencoba dari dashboard Vercel tanpa terminal lokal?** Ikuti
+[docs/12 §2A](docs/12-vercel-turso.md#2a-cara-paling-mudah-langsung-dari-dashboard-vercel-tanpa-terminal-lokal):
+aktifkan `KASIR_SETUP_DEMO=1` pada **Preview privat saja**, redeploy kode terbaru, lalu hapus flag
+setelah setup sukses. Database harus khusus demo dan Deployment Protection aktif.
 
-2. **Deploy di Vercel Dashboard**:
-   - Buka [vercel.com](https://vercel.com) dan pilih **Add New... → Project**.
-   - Impor repositori ini.
-   - Konfigurasi otomatis terbaca dari `vercel.json` (`npm run build` → `client/dist` dan API di `/api/index.js`).
-   - Isi **Environment Variables**: `KASIR_JWT_SECRET` (`openssl rand -hex 32`) — tanpa ini fungsi API
-     mengembalikan error start di produksi. Tambahkan `KASIR_AUTOSEED=1` **hanya** bila Anda memang ingin
-     data demo (akun `budi`/`rahasia123`) terisi otomatis — jangan dipakai dengan `NODE_ENV=production`.
-   - Klik **Deploy**.
+Ringkasan Vercel (jalur setup manual):
 
-3. **Deploy via Vercel CLI (Alternatif)**:
-   ```bash
-   npx vercel
-   ```
+1. Buat DB libSQL di Turso; simpan URL/token di `.env` **lokal**, jangan bagikan atau commit.
+2. Jalankan `npm ci`, kemudian `npm run db:setup -- --demo` untuk **demo privat** atau
+   `npm run db:setup -- --owner` untuk akun pribadi (detail env owner di docs/12).
+   Setup hanya sekali dari komputer operator; jangan jadikan Build Command.
+3. Pastikan kode perubahan ini sudah berada di branch yang dideploy. Set tiga variabel wajib tadi
+   pada scope Vercel yang sesuai. **Tetap `NODE_ENV=production`**, hapus `KASIR_AUTOSEED` dan konfigurasi `/tmp` lama.
+4. Root Directory = akar repositori; Node.js 22.x terbaru/24.x; build `npm run build`; output `client/dist`.
+5. Deploy ulang. `/api/health` harus menunjukkan `database: "turso"`. Login ulang sekali karena ID akun demo lama berbeda.
 
-> **Catatan Serverless:** Di lingkungan Vercel, API berjalan sebagai Serverless Functions dengan SQLite di `/tmp`. Saat cold-start pertama kali, sistem otomatis menginisialisasi skema dan data demo (*Kopi Senja*, pengguna `budi`, `dewi`, dsb.) sehingga aplikasi langsung siap dicoba.
+**Demo online:** `budi / rahasia123` (pemilik), `dewi / 4444` (tab PIN Kasir).
+Aktifkan Deployment Protection sebelum membagikan URL demo. Gunakan DB terpisah antara demo/Preview dan toko/Production.
+
+**Batas:** integrasi HTTP diuji lokal, bukan pada akun cloud pengguna. Adapter jaringan saat ini sinkron
+melalui worker, sehingga throughput dan latensi perlu diukur sebelum beban besar. Pembatas login masih
+per-instance; akses publik memerlukan pengamanan tambahan. Backup online dikelola dari Turso, bukan file SQLite lokal.
 
 
 ## Struktur proyek
@@ -158,7 +155,7 @@ kasir/
 │  ├─ src/ui.jsx · ui.css         komponen dasar + design token (tema dibaca lewat CSS var)
 │  ├─ src/features/               pos/ · inventory/ · report/ · alerts/ · admin/ · settings/ · receipt/
 │  └─ tests/                      smoke UI: env.js · ui-smoke.entry.jsx · ui-smoke.mjs
-├─ docs/                          11 dokumen (arsitektur → deployment → rencana beta → analisis)
+├─ docs/                          12 dokumen (arsitektur → deployment → rencana beta → analisis)
 ├─ ops/                           crontab, systemd, Caddyfile/nginx, pembungkus maintenance
 └─ .github/workflows/ci.yml       CI: npm test → test:ui → test:qa → build (Node 22)
 ```
@@ -175,6 +172,7 @@ kasir/
 | [docs/06-panduan-pengguna.md](docs/06-panduan-pengguna.md) | SOP per peran: kasir, manajer inventaris, admin |
 | [docs/07-api.md](docs/07-api.md) | Referensi endpoint REST + contoh cURL |
 | [docs/08-qa-simulasi.md](docs/08-qa-simulasi.md) | Hasil QA Fase 4: transaksi massal, akurasi BOM, kebocoran data, smoke UI |
+| [docs/12-vercel-turso.md](docs/12-vercel-turso.md) | Vercel + database bersama Turso, setup akun, migrasi dari demo `/tmp`, batas dan verifikasi |
 | [docs/09-deployment-dan-maintenance.md](docs/09-deployment-dan-maintenance.md) | Deployment, pencadangan, jadwal & prosedur pemeliharaan, rollback |
 | [docs/10-rilis-beta.md](docs/10-rilis-beta.md) | Rencana rilis beta ke pengguna awal |
 | [docs/11-analisis-2026-09-17.md](docs/11-analisis-2026-09-17.md) | Analisis repositori putaran 2: 15 temuan terverifikasi runtime + status perbaikan |

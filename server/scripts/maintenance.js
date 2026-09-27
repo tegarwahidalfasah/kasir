@@ -18,7 +18,9 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-import { DB_FILE, DATA_DIR, db } from '../src/db/index.js';
+import { DB_FILE, DATA_DIR, db, IS_REMOTE } from '../src/db/index.js';
+
+if (IS_REMOTE) throw new Error('Perintah pemeliharaan file lokal tidak tersedia untuk Turso. Gunakan backup/restore dari penyedia database.');
 
 const argv = process.argv.slice(2);
 const cmd = argv[0] && !argv[0].startsWith('--') ? argv[0] : 'status';

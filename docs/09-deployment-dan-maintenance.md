@@ -174,37 +174,24 @@ Tidak ada telemetri keluar — tidak ada panggilan ke layanan pihak ketiga di ko
 * [ ] Prosedur rollback dibaca & disetujui 1 orang selain installer.
 * [ ] Jam rilis disepakati; ada kanal pelaporan bug (WhatsApp/grup) + penanggung jawab.
 
-## 10. Vercel = jalur **demo/pratinjau**, bukan produksi
+## 10. Vercel + database bersama Turso
 
-> **Keputusan proyek (17 Sep 2026): target produksi adalah VPS/systemd** seperti §1–§9 di atas
-> (atau container dengan volume persisten). Bagian ini dibiarkan untuk demo UI/pratinjau ke calon
-> pengguna, dan **jangan** dipakai mencatat penjualan sungguhan.
+**Panduan yang berlaku sekarang: [docs/12-vercel-turso.md](12-vercel-turso.md).**
 
-Alasan teknis (rinci di `docs/11-analisis-2026-09-17.md` §10):
+Cara lama SQLite `/tmp` telah dihentikan untuk Vercel. Tiap instance memiliki database sendiri;
+seed membuat ID akun acak sehingga token dari instance A ditolak instance B. Secret JWT yang tetap saja tidak cukup.
 
-- **DB di `/tmp` bersifat sementara dan per-instance.** Setiap container recycle menghapus seluruh
-  transaksi; dua instance/region punya DB berbeda-beda. Tidak ada cara mencadangkan atau memulihkan
-  data yang berarti di model ini.
-- **Rahasia JWT ikut hilang** (`/tmp/.jwt-secret`) → semua sesi gugur tiap cold start; kasir
-  terlempar ke layar login tanpa sebab yang terlihat.
-- **Auto-seed di balik flag (sejak 26 Sep 2026).** `api/index.js` hanya menjalankan `runSeed()` bila
-  `KASIR_AUTOSEED=1` **dan** `NODE_ENV !== 'production'`; `runSeed()` sendiri menolak jalan di produksi
-  kecuali disengaja (`KASIR_ALLOW_SEED=1`). Sebelumnya DB kosong otomatis terisi user demo `budi`
-  dengan kata sandi `rahasia123` yang tercantum di README — siapa pun yang menemukan URL-nya menjadi
-  pemilik toko.
-- **`KASIR_JWT_SECRET` wajib di produksi (sejak 26 Sep 2026).** Tanpa rahasia eksplisit, server
-  **gagal start** dengan instruksi pembuatan rahasia (bukan lagi membuat berkas `/tmp/.jwt-secret`
-  yang hilang tiap cold start).
+- Vercel wajib memakai `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, dan `KASIR_JWT_SECRET`.
+- Skema dan akun dibuat eksplisit sekali lewat `npm run db:setup -- --demo` (demo privat)
+  atau `npm run db:setup -- --owner` (akun pribadi). Tidak ada seed runtime/endpoint setup publik.
+- Jangan lagi mengubah `NODE_ENV` menjadi `development`; gunakan `production` dan hapus `KASIR_AUTOSEED`.
+- Default build tidak mengisi akun. Khusus demo Preview privat tanpa terminal lokal,
+  `KASIR_SETUP_DEMO=1` mengizinkan setup idempoten saat build; hapus flag setelah sukses.
+  Production ditolak. Lihat docs/12 §2A. `npm run build` juga membuat SPA dan bundle worker HTTP SDK.
+- Scope Preview dan Production sebaiknya memakai database serta secret berbeda. Lindungi demo dengan Deployment Protection.
+- Backup/reset/restore file lokal pada §1–§9 **tidak berlaku untuk Turso**. Gunakan fasilitas penyedia database.
+- Stok antar-instance memakai polling; sesi memakai ID pengguna yang sama dari DB bersama.
 
-Sisa syarat bila suatu saat serverless tetap diinginkan: DB eksternal (Turso/libSQL atau Postgres)
-di balik lapisan `server/src/db/index.js`.
-
-- **Arsitektur Vercel (apa adanya)**:
-  - Frontend SPA (Vite + React) dibuild otomatis via `npm run build` dan disajikan lewat edge CDN Vercel (`client/dist`).
-  - Backend API Express disajikan sebagai Vercel Serverless Function melalui `api/index.js` dengan rewrites di `vercel.json`.
-  - Database SQLite menggunakan direktori `/tmp` (`KASIR_DATA_DIR=/tmp`); auto-seed data demo **mati secara default** (butuh `KASIR_AUTOSEED=1`, dan tidak pernah aktif saat `NODE_ENV=production`).
-- **Langkah Deploy (demo)**:
-  1. Hubungkan repositori Git ke Vercel via Dashboard Vercel atau jalankan `npx vercel`.
-  2. Vercel mendeteksi file `vercel.json` secara otomatis.
-  3. Set `KASIR_JWT_SECRET` (dan `KASIR_AUTOSEED=1` bila ingin data demo) di Environment Variables; URL pratinjau langsung aktif — beri label "demo" dan ganti kata sandi akun demo bila URL dibagikan.
-
+Integrasi baru telah diuji terhadap endpoint HTTPS/Hrana lokal, tetapi masih memerlukan pengujian deployment
+cloud, latensi/beban, backup/restore, serta pengamanan rate limit lintas-instance sebelum pemakaian toko sungguhan.
+Lihat docs/12 untuk langkah aktivasi, diagnosis, dan batas adapter sinkron transisional.

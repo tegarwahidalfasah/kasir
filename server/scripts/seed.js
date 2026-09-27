@@ -3,7 +3,7 @@
 //  Jalankan: npm run seed         (idempoten: menimpa hanya bila --force)
 //            npm run reset && npm run seed   (dari nol)
 // ===========================================================================
-import { db, allRows, firstRow, exec, uid, nowIso, round2, saveSetting } from '../src/db/index.js';
+import { db, IS_REMOTE, allRows, firstRow, exec, uid, nowIso, round2, saveSetting } from '../src/db/index.js';
 import { DEFAULTS } from '../src/config.js';
 import { hashPassword, hashPin } from '../src/auth.js';
 import { postMovement, reconcileStock } from '../src/inventory.js';
@@ -16,6 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export function runSeed({ force = false, quiet = false, auto = false } = {}) {
+  if (IS_REMOTE) throw new Error('Untuk database online gunakan npm run db:setup -- --demo. Seed historis lokal tidak dijalankan melalui jaringan.');
   const log = quiet ? () => {} : (...a) => console.log(...a);
 
   // Data demo berisi kredensial yang dipublikasikan di README (budi/rahasia123, PIN 1111).

@@ -7,7 +7,7 @@
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
-import { db, allRows, firstRow, exec, uid, loadSetting, saveSetting, DB_FILE } from '../db/index.js';
+import { db, allRows, firstRow, exec, uid, loadSetting, saveSetting, DB_FILE, IS_REMOTE } from '../db/index.js';
 import { authenticate, requirePerm } from '../middleware/index.js';
 import { DEFAULTS } from '../config.js';
 import { http, AppError } from '../lib/http.js';
@@ -250,6 +250,7 @@ router.delete(MOUNT + '/branches/:id', auth('setting.store'), http((req, res) =>
 
 /** Snapshot DB untuk backup manual (Fase 4: pemeliharaan). */
 router.get(MOUNT + '/admin/backup', auth('system.maintenance'), http((req, res) => {
+  if (IS_REMOTE) throw new AppError(409, 'Backup database online dikelola melalui Turso, bukan file SQLite lokal.');
   const file = DB_FILE + '.backup.sqlite';
   try {
     if (fs.existsSync(file)) fs.unlinkSync(file);

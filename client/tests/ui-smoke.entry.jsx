@@ -6,7 +6,7 @@ import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { act as actLegacy } from 'react-dom/test-utils';
 import { dom, BASE } from './env.js';
-import { setToken } from '../src/api.js';
+import { setToken, getToken } from '../src/api.js';
 import { AppProvider } from '../src/store.jsx';
 import { App } from '../src/App.jsx';
 import PosPage from '../src/features/pos/PosPage.jsx';
@@ -114,6 +114,38 @@ setToken('');
   ok(!!lp.container.querySelector('.sidebar'), 'klik "Masuk" berhasil masuk ke shell (sidebar tampil)');
   ok(!text(lp.container).includes('Nama pengguna'), 'layar login hilang setelah masuk');
   lp.unmount();
+}
+
+// Regresi sesi online: error sementara bukan alasan menghapus token.
+console.log('\n▶ sesi online: retry saat DB gagal, logout hanya saat 401, tanpa SSE');
+{
+  const normalFetch = globalThis.fetch;
+  let status = 503;
+  let eventRequests = 0;
+  globalThis.fetch = (url, opts) => {
+    if (String(url).includes('/api/bootstrap')) return Promise.resolve(new Response(
+      JSON.stringify(status === 200 ? { ...boot, stock_transport: 'poll' } : { error: 'Test unavailable' }),
+      {status, headers:{'content-type':'application/json'}},
+    ));
+    if (String(url).includes('/api/events')) eventRequests++;
+    return normalFetch(url, opts);
+  };
+  setToken(sesi.token);
+  const recovery = await mount(h(App));
+  ok(text(recovery.container).includes('Belum dapat memuat toko'), '503 menampilkan pilihan coba lagi');
+  ok(getToken() === sesi.token, '503 tidak menghapus token');
+  status = 200;
+  await click(find(recovery.container, 'button', 'Coba lagi'));
+  ok(!!recovery.container.querySelector('.sidebar'), 'retry memulihkan sesi tanpa login ulang');
+  ok(eventRequests === 0, 'mode polling tidak membuka SSE');
+  recovery.unmount();
+  status = 401;
+  const rejected = await mount(h(App));
+  ok(!getToken(), '401 tetap menghapus token yang ditolak');
+  ok(text(rejected.container).includes('Nama pengguna'), '401 kembali ke login');
+  rejected.unmount();
+  globalThis.fetch = normalFetch;
+  setToken(sesi.token);
 }
 
 // ------------------------------------------------------- 1. semua halaman
