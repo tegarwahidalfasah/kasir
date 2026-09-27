@@ -71,7 +71,7 @@ const runFile = (f) => new Promise((resolve) => {
   const dataDir = makeDir();
   dirs.push(dataDir);
   const proc = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', path.join(TEST_DIR, f), '--standalone'], {
-    cwd: ROOT, env: { ...process.env, KASIR_DATA_DIR: dataDir, NODE_NO_WARNINGS: '1' }, stdio: 'inherit',
+    cwd: ROOT, env: { ...process.env, TURSO_DATABASE_URL: '', TURSO_AUTH_TOKEN: '', VERCEL: '', KASIR_DB_PATH: '', NODE_ENV: 'test', KASIR_DATA_DIR: dataDir, NODE_NO_WARNINGS: '1' }, stdio: 'inherit',
   });
   proc.on('exit', (code) => { if (!keep) { try { fs.rmSync(dataDir, { recursive: true, force: true }); } catch { } } resolve(code || 0); });
 });

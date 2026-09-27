@@ -3,6 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+if (process.env.TURSO_DATABASE_URL || process.env.TURSO_AUTH_TOKEN || process.env.VERCEL) {
+  throw new Error('Reset file lokal ditolak dalam mode online. Tidak ada data Turso yang dihapus.');
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.KASIR_DATA_DIR || path.join(__dirname, '..', 'src', 'data');
 let removed = 0;

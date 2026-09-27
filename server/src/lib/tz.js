@@ -14,7 +14,7 @@
 //  "sekarang"). Untuk toko berzona tanpa DST (seluruh Indonesia) hasilnya persis;
 //  di zona ber-DST, baris tepat di sekitar pergantian bisa bergeser ≤ 1 jam.
 // ============================================================================
-import { firstRow } from '../db/index.js';
+import { firstRow, IS_REMOTE } from '../db/index.js';
 
 export const DEFAULT_TZ = 'Asia/Jakarta';
 
@@ -89,15 +89,15 @@ export function addDays(day, days) {
 // ------------------------------------------------------------------ per toko
 const cache = new Map();
 
-/** Zona waktu toko (kolom `stores.timezone`), di-cache selama proses hidup. */
+/** Zona waktu toko. Cache hanya lokal; online membaca DB bersama agar tidak basi antar-instance. */
 export function storeTimezone(storeId) {
   if (!storeId) return DEFAULT_TZ;
-  if (cache.has(storeId)) return cache.get(storeId);
+  if (!IS_REMOTE && cache.has(storeId)) return cache.get(storeId);
   let tz = DEFAULT_TZ;
   try {
     tz = firstRow(`SELECT timezone FROM stores WHERE id = ?`, storeId)?.timezone || DEFAULT_TZ;
   } catch { /* tabel store belum ada (mis. saat boot) */ }
-  cache.set(storeId, tz);
+  if (!IS_REMOTE) cache.set(storeId, tz);
   return tz;
 }
 

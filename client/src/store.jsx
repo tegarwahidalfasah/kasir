@@ -72,10 +72,20 @@ export function AppProvider({ children }) {
     return () => window.removeEventListener('kasir:unauthorized', onUnauth);
   }, []);
 
-  useEffect(() => {
+  const retrySession = useCallback(async () => {
     if (!getToken()) { setStatus('anon'); return; }
-    loadBootstrap().then(() => setStatus('ready')).catch(() => { setToken(''); setStatus('anon'); });
+    setStatus('loading');
+    try {
+      await loadBootstrap();
+      setStatus('ready');
+    } catch (err) {
+      // Hanya 401 berarti sesi ditolak. Gangguan DB/jaringan bukan logout.
+      // api() sudah menghapus token pada 401; simpan token untuk retry 5xx/offline.
+      setStatus(err.status === 401 ? 'anon' : 'error');
+    }
   }, [loadBootstrap]);
+
+  useEffect(() => { retrySession(); }, [retrySession]);
 
   // Refresh ringan tiap 45 detik (docs/11 §15): hanya identitas, permission, menu,
   // jumlah peringatan, dan `catalog_version`. Katalog+BOM penuh (respons berat)
@@ -108,7 +118,7 @@ export function AppProvider({ children }) {
   // Authorization dan tidak pernah muncul di URL. Bila gagal, `live` tetap false
   // dan halaman POS memakai poling cadangan yang lebih lambat.
   useEffect(() => {
-    if (status !== 'ready') { setLive(false); return undefined; }
+    if (status !== 'ready' || boot?.stock_transport === 'poll') { setLive(false); return undefined; }
     const ctl = new AbortController();
     let stopped = false;
 
@@ -164,10 +174,10 @@ export function AppProvider({ children }) {
     };
     run();
     return () => { stopped = true; ctl.abort(); setLive(false); };
-  }, [status]);
+  }, [status, boot?.stock_transport]);
 
   const value = useMemo(() => ({
-    status, session, boot, setBoot, login, logout, refresh, toast, confirm,
+    status, session, boot, setBoot, login, logout, retrySession, refresh, toast, confirm,
     perms: boot?.permissions || [],
     can: (p) => hasPerm(boot?.permissions, p),
     settings: boot?.settings || {},
@@ -183,7 +193,7 @@ export function AppProvider({ children }) {
     catalogVersion: boot?.catalog_version || null,
     stockRev,
     live,
-  }), [status, session, boot, login, logout, refresh, toast, confirm, stockRev, live]);
+  }), [status, session, boot, login, logout, retrySession, refresh, toast, confirm, stockRev, live]);
 
   return (
     <AppCtx.Provider value={value}>

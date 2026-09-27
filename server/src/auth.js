@@ -5,6 +5,8 @@
 //  - Rate limit login: in-memory, dua ember/60 detik (per-IP 5x, per-username 8x)
 // ===========================================================================
 import crypto from 'node:crypto';
+import { hashPassword, verifyPassword } from './passwords.js';
+export { hashPassword, verifyPassword } from './passwords.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,9 +50,9 @@ const secret = () => (SECRET ||= loadSecret());
  */
 export function assertJwtSecret(env = process.env) {
   if (env.KASIR_JWT_SECRET) return;
-  if (env.NODE_ENV === 'production') {
+  if (env.NODE_ENV === 'production' || env.VERCEL || env.TURSO_DATABASE_URL) {
     throw new Error(
-      'KASIR_JWT_SECRET wajib diisi saat NODE_ENV=production.\n' +
+      'KASIR_JWT_SECRET wajib diisi saat NODE_ENV=production atau database online.\n' +
       '  Buat:  openssl rand -hex 32\n' +
       '  Lalu set sebagai environment variable (lihat .env.example & docs/09 §4).'
     );
@@ -59,20 +61,6 @@ export function assertJwtSecret(env = process.env) {
 const TTL_SECONDS = Number(process.env.KASIR_TOKEN_TTL || 12 * 3600);
 
 const b64u = (buf) => Buffer.from(buf).toString('base64url');
-
-export function hashPassword(plain) {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(String(plain), salt, 32).toString('hex');
-  return `s2:${salt}:${hash}`;
-}
-
-export function verifyPassword(plain, stored) {
-  if (!stored || typeof stored !== 'string') return false;
-  const [tag, salt, hash] = stored.split(':');
-  if (tag !== 's2' || !salt || !hash) return false;
-  const candidate = crypto.scryptSync(String(plain), salt, 32).toString('hex');
-  return crypto.timingSafeEqual(Buffer.from(candidate, 'hex'), Buffer.from(hash, 'hex'));
-}
 
 export function signToken(payload, ttl = TTL_SECONDS) {
   const header = b64u(JSON.stringify({ alg: 'HS256', typ: 'JWT' }));
