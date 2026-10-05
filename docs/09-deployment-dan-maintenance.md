@@ -21,7 +21,7 @@ aktif serentak atau laporan berat, pindahkan ke PostgreSQL (lihat [01-arsitektur
 | Spesifikasi | Minimum | Nyaman |
 |---|---|---|
 | OS | Linux (Ubuntu 22.04+/Debian 12), Windows 11 juga jalan | Linux + systemd |
-| Node.js | **22.5+** (modul `node:sqlite`) | LTS 22.x terbaru |
+| Node.js | **22.12+** (Vite 8; `node:sqlite` tersedia sejak 22.5) | LTS 22.x terbaru |
 | CPU / RAM | 1 core / 512 MB | 2 core / 2 GB |
 | Disk | 1 GB + 2× ukuran DB untuk cadangan | SSD, 10 GB |
 | Jaringan | IP statis/LAN tetap; port 4000 terbuka di LAN | + domain & TLS untuk akses luar |
@@ -33,9 +33,10 @@ aktif serentak atau laporan berat, pindahkan ke PostgreSQL (lihat [01-arsitektur
 sudo mkdir -p /opt/kasir && sudo chown $USER /opt/kasir
 git clone <repo> /opt/kasir && cd /opt/kasir && git checkout main && git pull
 
-# 2) dependensi & build (hanya dependency runtime; tanpa native build)
-npm ci --omit=dev --workspaces --include-workspace-root
+# 2) dependensi & build (Vite/esbuild adalah devDependency, jadi perlu saat build)
+npm ci --workspaces --include-workspace-root
 npm run build                      # client/dist siap diserve oleh API
+npm prune --omit=dev --workspaces --include-workspace-root  # opsional: buang tool build setelah build selesai
 
 # 3) layanan & data
 sudo useradd -r -s /usr/sbin/nologin kasir
@@ -105,7 +106,7 @@ Bila `ops/kasir.service` tidak dipakai, jalankan minimal dengan:
 | **Bulanan 1-nya 04:00** | **latih pemulihan** ke pangkalan sementara | lihat §6 langkah 4 |
 | **Bulanan** | cek kapasitas disk & ukuran DB | `ops/maintenance.sh status` (menampilkan “ledger vs stok” + cadangan terakhir) |
 | **Triwulanan** | audit hak akses | `GET /api/users`, `GET /api/roles`; cabut yang tidak dipakai; ganti kata sandi |
-| **Sebelum rilis** | `npm run check && npm run test:qa` | 77 unit/integrasi + 32 smoke UI + 20 QA harus hijau (CI: `.github/workflows/ci.yml`) |
+| **Sebelum rilis** | `npm run check && npm run test:qa` | 108 tes backend + 38 smoke UI + 20 QA harus hijau (CI: `.github/workflows/ci.yml`) |
 
 `ops/maintenance.sh` adalah pembungkus tipis (kunci `flock` + log + notifikasi) di atas skrip
 `server/scripts/{backup,maintenance}.js`; contoh cron ada di [`ops/crontab.example`](../ops/crontab.example).
@@ -133,7 +134,7 @@ npm run backup -- --verify --name=pra-upgrade          # (1) cadangan + verifika
 systemctl stop kasir
 git fetch && git log --oneline HEAD..origin/main        # (2) baca yang berubah
 git pull --ff-only
-npm ci --omit=dev --workspaces --include-workspace-root && npm run build   # (3)
+npm ci --workspaces --include-workspace-root && npm run build && npm prune --omit=dev --workspaces --include-workspace-root   # (3)
 systemctl start kasir                                       # (4) skema dibuat/diperbarui saat start
 curl -s localhost:4000/api/health                       # (5) counts naik, tidak 500
 ```
@@ -143,7 +144,7 @@ curl -s localhost:4000/api/health                       # (5) counts naik, tidak
    (kebijakan: [02-skema-data.md §9](02-skema-data.md)). Karena itu rilis yang mengubah skema mencantumkan langkah `ALTER`
    di CHANGELOG, dan menjalankannya di DB **salinan** lebih dulu (`npm run maintenance -- restore …` ke pangkalan sementara).
 3. Jam rilis untuk toko retail: **setelah tutup – sebelum subuh** (mis. 22:30–04:00) + pengumuman H-1.
-4. Rollback < 5 menit: `git checkout <tag sebelumnya> && npm ci --omit=dev && npm run build && systemctl restart kasir`;
+4. Rollback < 5 menit: `git checkout <tag sebelumnya> && npm ci --workspaces --include-workspace-root && npm run build && npm prune --omit=dev --workspaces --include-workspace-root && systemctl restart kasir`;
    kalau DB sudah ikut berubah → pulihkan cadangan `pra-upgrade` (§6 langkah 1–3).
 5. Verifikasi pascarilis (kasir nyata, 3 menit): login → 1 transaksi + struk tercetak → cek stok terpotong → 1 pembatalan
    → `GET /api/stock/integrity` → `mismatches: []` → buka laporan hari ini.

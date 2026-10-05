@@ -58,9 +58,9 @@ menyentuh data/format yang sudah dipakai — perlu keputusan pemilik sebelum diu
   tetapi secara akuntansi tipe ini menyimpan risiko pembulatan jangka panjang.
 - **Klaim multi-cabang belum sepenuhnya nyata**: stok belum dipisah per cabang, laporan belum
   dapat difilter per cabang, dan belum ada endpoint transfer/mutasi (lihat dok 01 §7).
-- **Dua advisory dependensi (dev)**: `esbuild` ≤ 0.24.2 dan `vite` ≤ 6.4.2 (GHSA-67mh-4wv8-2f99,
-  dev server dapat diakses situs lain). Hanya berdampak pada `npm run dev`, bukan berkas yang
-  dikirim ke peramban toko; perbaikan menuntut kenaikan Vite ke 6/7.
+- ~~**Advisory dependensi (dev)**: esbuild/Vite lama memiliki kerentanan dev-server.~~ ✅ Diperbarui:
+  Vite 8.3.2, `@vitejs/plugin-react` 6.1.2, dan esbuild 0.28.2; `npm audit` bersih (0 temuan).
+  Toolchain Vite 8 memerlukan Node.js ≥22.12.
 
 ## 3. Gelombang & jadwal
 

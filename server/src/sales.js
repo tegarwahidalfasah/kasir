@@ -57,12 +57,15 @@ export function resolveAddons(catalog, itemId, addons) {
 
 export function activeRules(storeId) {
   const taxes = allRows(`SELECT * FROM taxes WHERE store_id = ? AND is_active = 1 ORDER BY sort_order ASC`, storeId);
+  // Validitas tanggal dicek oleh ruleMatches() dalam zona bisnis toko; SQLite date('now')
+  // memakai hari UTC dan dapat mematikan promo sebelum hari toko berakhir.
   const discounts = allRows(
-    `SELECT * FROM discounts WHERE store_id = ? AND is_active = 1
-       AND (valid_from IS NULL OR valid_from <= date('now'))
-       AND (valid_to IS NULL OR valid_to >= date('now'))`,
-    storeId
-  ).map((d) => ({ ...d, ref_ids: safeJson(d.ref_ids, []) }));
+    `SELECT * FROM discounts WHERE store_id = ? AND is_active = 1 ORDER BY rowid`, storeId
+  ).map((d) => ({
+    ...d,
+    ref_ids: safeJson(d.ref_ids, []),
+    days: safeJson(d.days, []),
+  }));
   const methods = allRows(`SELECT * FROM payment_methods WHERE store_id = ? ORDER BY sort_order ASC`, storeId);
   return { taxes, discounts, methods };
 }
@@ -116,7 +119,7 @@ export function createSale(p) {
   const pricing = calculatePrice({
     lines: p.lines, catalog, taxConfig: taxCfg, taxes, discounts,
     selectedDiscountIds: p.selectedDiscountIds || [], paymentMethod: payment,
-    date: new Date(), paidAmount: p.paidAmount ?? null,
+    date: new Date(), timeZone: storeTimezone(p.storeId), paidAmount: p.paidAmount ?? null,
   });
 
   // HPP: untuk barang jadi dengan BOM, pakai biaya bahan (lebih akurat dari cost_price statis)

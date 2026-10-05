@@ -175,7 +175,11 @@ describe('api', () => {
   });
 
   it('retur lewat API berpagar: 409 saat melebihi sisa, uang tercatat, laporan neto, void ditolak', async () => {
-    // setup deterministik (pajak/pembulatan sudah dinetralkan tes sebelumnya)
+    // Isolasi pengujian retur dari promo menurut jam/hari dan konfigurasi toko.
+    for (const d of await must('/discounts')) {
+      if (d.trigger !== 'manual' && d.is_active) await must(`/discounts/${d.id}`, { method: 'PUT', body: { is_active: 0 } });
+    }
+    await must('/settings/tax', { method: 'PUT', body: { enabled: false, rounding_mode: 'none', service_charge_pct: 0 } });
     const raw = await must('/items', { method: 'POST', body: { name: 'Bahan Retur API', item_type: 'raw', unit: 'gr', cost_price: 500, opening_stock: 1000 } });
     const fin = await must('/items', { method: 'POST', body: { name: 'Kopi Retur API', item_type: 'finished', selling_price: 10000, production_mode: 'make_to_order', tax_mode: 'exempt' } });
     await must(`/items/${fin.id}/recipe`, { method: 'PUT', body: { recipe: [{ raw_item_id: raw.id, qty: 10 }] } });
@@ -315,6 +319,35 @@ describe('api', () => {
     assert.equal(after.find((x) => x.id === d.id), undefined);
   });
 
+  it('diskon item dan kategori di API tidak bocor ke baris lain', async () => {
+    const categories = await must('/categories');
+    assert.ok(categories.length >= 2, 'seed menyediakan beberapa kategori');
+    const target = await must('/items', { method: 'POST', body: {
+      name: 'Target Diskon Scope API', item_type: 'finished', category_id: categories[0].id,
+      selling_price: 10000, tax_mode: 'exempt', is_non_stock: 1,
+    } });
+    const other = await must('/items', { method: 'POST', body: {
+      name: 'Barang Di Luar Scope API', item_type: 'finished', category_id: categories[1].id,
+      selling_price: 10000, tax_mode: 'exempt', is_non_stock: 1,
+    } });
+
+    for (const [scope, refId] of [['item', target.id], ['category', categories[0].id]]) {
+      const rule = await must('/discounts', { method: 'POST', body: {
+        name: `Uji cakupan ${scope}`, kind: 'percent', value: 10, applies_to: scope,
+        ref_ids: [refId], trigger: 'manual', stackable: 0, is_active: 1,
+      } });
+      const sale = await must('/sales', { method: 'POST', as: 'cashier', body: {
+        lines: [{ item_id: target.id, qty: 1 }, { item_id: other.id, qty: 1 }],
+        selected_discount_ids: [rule.id], external_ref: `scope-${scope}-${Date.now()}`,
+      } });
+      assert.equal(sale.subtotal, 20000);
+      assert.equal(sale.discount_total, 1000, `${scope}: hanya barang target Rp10.000 yang mendapat diskon`);
+      assert.equal(sale.discount_lines[0].amount, 1000);
+      await must(`/sales/${sale.id}/void`, { method: 'POST', as: 'owner', body: { reason: 'uji cakupan diskon' } });
+      await must(`/discounts/${rule.id}`, { method: 'DELETE' });
+    }
+  });
+
   it('laporan: ringkasan, pemakaian bahan, valuasi stok, CSV', async () => {
     const sum = await must('/reports/summary');
     assert.ok(sum.totals.tx_count > 0);
@@ -416,16 +449,32 @@ describe('api', () => {
     const forged = await must('/sales', {
       method: 'POST', token: token.cashier,
       body: {
-        lines: [{ item_id: finished.id, qty: 2, addons: [{ name: 'Extra Shot', price_delta: -19000, raw_item_id: asing.id, raw_qty: 999999 }] }],
+        lines: [{ item_id: finished.id, qty: 2, unit_price: 0, addons: [{ name: 'Extra Shot', price_delta: -19000, raw_item_id: asing.id, raw_qty: 999999 }] }],
         external_ref: `forge-${Date.now()}`,
       },
     });
     const line = forged.lines?.[0] || (await must(`/sales/${forged.id}`)).items[0];
     const hargaDb = Number(finished.selling_price) || 0;
-    // price_delta PALSU (-19000) harus digantikan nilai DB (+6000); qty 2 -> (harga+6000) x 2 sebelum pajak
+    // harga dasar dan addon palsu dari klien harus diganti dengan nilai master DB.
+    // qty 2 -> (harga master + addon DB Rp6.000) x 2 sebelum pajak.
+    assert.equal(line.unit_price, hargaDb, 'unit_price selalu memakai harga master, bukan payload klien');
     assert.equal(line.addon_delta, 6000, 'addon_delta diambil dari item_addons, bukan payload klien');
     assert.equal(line.line_total, (hargaDb + 6000) * 2, 'line_total memakai harga master + addon DB');
     assert.ok(forged.grand_total >= 2 * hargaDb, `total ${forged.grand_total} tidak boleh lebih murah dari 2x harga master`);
+
+    const cashierDiscount = await req('/pos/preview', {
+      method: 'POST', as: 'cashier', body: { lines: [{ item_id: finished.id, qty: 1, discount: hargaDb }] },
+    });
+    assert.equal(cashierDiscount.status, 403, 'kasir tanpa setting.tax tidak boleh menetapkan diskon baris bebas pada preview');
+    const cashierDiscountSale = await req('/sales', {
+      method: 'POST', as: 'cashier', body: { lines: [{ item_id: finished.id, qty: 1, discount: 1000 }] },
+    });
+    assert.equal(cashierDiscountSale.status, 403, 'kasir tanpa setting.tax tidak boleh menyimpan diskon baris bebas');
+    const managerDiscount = await must('/pos/preview', {
+      method: 'POST', as: 'manager', body: { lines: [{ item_id: finished.id, qty: 1, discount: 1000 }] },
+    });
+    assert.equal(managerDiscount.pricing.lines[0].line_discount, 1000, 'manajer dengan setting.tax boleh memberi diskon baris');
+
     const after = Object.fromEntries((await must('/items')).filter((i) => stockBefore[i.id] != null).map((i) => [i.id, i.stock_qty]));
     const dipakaiAsing = stockBefore[asing.id] - (after[asing.id] ?? stockBefore[asing.id]);
     assert.ok(dipakaiAsing < 100, `bahan yang tidak ada di resep (${asing.name}) tidak boleh terpotong ${dipakaiAsing}`);

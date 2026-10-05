@@ -22,20 +22,63 @@ export function discountValue(rule, base) {
   return Math.max(0, Math.min(round0(capped), round0(base)));
 }
 
-/** Apakah rule diskon "auto" layak dipakai pada saat transaksi ini terjadi? */
-export function ruleMatches(rule, ctx) {
+/** Parse date/time at the store's business timezone, not the host's timezone. */
+function datePartsAt(date, timeZone) {
+  const d = date instanceof Date ? date : new Date(date || Date.now());
+  if (!Number.isFinite(d.getTime())) return null;
+
+  const formatInZone = (zone) => {
+    const fields = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+      timeZone: zone,
+      year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    }).formatToParts(d).map((part) => [part.type, part.value]));
+    const weekday = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[fields.weekday];
+    return {
+      day: `${fields.year}-${fields.month}-${fields.day}`,
+      weekday,
+      hhmm: `${fields.hour}:${fields.minute}`,
+    };
+  };
+
+  if (timeZone) {
+    try { return formatInZone(timeZone); } catch { /* invalid store zone -> WIB fallback */ }
+    try { return formatInZone('Asia/Jakarta'); } catch { /* Intl unavailable -> local fallback */ }
+  }
+  return {
+    day: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+    weekday: d.getDay(),
+    hhmm: `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`,
+  };
+}
+
+function ruleDays(value) {
+  let days = value;
+  if (typeof days === 'string') {
+    try { days = JSON.parse(days); } catch { return []; }
+  }
+  return Array.isArray(days)
+    ? days.map(Number).filter((day) => Number.isInteger(day) && day >= 0 && day <= 6)
+    : [];
+}
+
+/** Apakah aturan diskon berlaku pada waktu bisnis toko saat transaksi dibuat? */
+export function ruleMatches(rule, ctx = {}) {
   if (!rule || !rule.is_active) return false;
   const d = ctx.date instanceof Date ? ctx.date : new Date(ctx.date || Date.now());
-  if (rule.valid_from && d < new Date(rule.valid_from)) return false;
-  if (rule.valid_to && d > new Date(rule.valid_to + 'T23:59:59')) return false;
+  const local = datePartsAt(d, ctx.timeZone);
+  if (!local) return false;
+  const validFrom = rule.valid_from ? String(rule.valid_from).slice(0, 10) : null;
+  const validTo = rule.valid_to ? String(rule.valid_to).slice(0, 10) : null;
+  if (validFrom && local.day < validFrom) return false;
+  if (validTo && local.day > validTo) return false;
   switch (rule.trigger) {
     case 'auto_weekday':
-      return Array.isArray(rule.days) && rule.days.length > 0 && rule.days.includes(d.getDay());
+      return ruleDays(rule.days).includes(local.weekday);
     case 'auto_time': {
-      const hhmm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
       const start = rule.start_time || '00:00';
       const end = rule.end_time || '23:59';
-      return start <= end ? (hhmm >= start && hhmm <= end) : (hhmm >= start || hhmm <= end);
+      return start <= end ? (local.hhmm >= start && local.hhmm <= end) : (local.hhmm >= start || local.hhmm <= end);
     }
     case 'auto_min_subtotal':
       return (ctx.base || 0) >= (Number(rule.min_subtotal) || 0);
@@ -61,7 +104,7 @@ export function ruleMatches(rule, ctx) {
  */
 export function calculatePrice({
   lines = [], catalog = {}, taxConfig = {}, taxes = [], discounts = [],
-  selectedDiscountIds = [], paymentMethod = null, date = new Date(), paidAmount = null,
+  selectedDiscountIds = [], paymentMethod = null, date = new Date(), timeZone = null, paidAmount = null,
 }) {
   const cfg = {
     enabled: true, default_rate_pct: 0, inclusive: false, service_charge_pct: 0,
@@ -110,32 +153,76 @@ export function calculatePrice({
       line_base: base, tax_rate: lineRate, tax_base: taxable,
       cost_snapshot: unitCost, cost_total: lineCost,
       item_type: item.item_type || 'finished', is_non_stock: !!item.is_non_stock,
+      category_id: item.category_id ?? null,
       addons: raw.addons || [],
     });
   }
 
-  // ---- diskon global otomatis + manual ---------------------------------
+  // ---- diskon otomatis + manual, dengan cakupan item/kategori -------------
   const baseForGlobal = round0(subtotalList - lineDiscountTotal);
   const active = (discounts || []).filter((r) => r.is_active);
-  const autoRules = active.filter((r) => r.trigger !== 'manual' && ruleMatches(r, { date, base: baseForGlobal }));
-  const manualRules = active.filter((r) => (selectedDiscountIds || []).includes(r.id));
+  const autoRules = active.filter((r) => r.trigger !== 'manual' && ruleMatches(r, { date, timeZone, base: baseForGlobal }));
+  // Hanya rule berpemicu manual yang boleh dipilih dari payload; klien tidak dapat
+  // memaksa promo otomatis aktif di luar jadwalnya dengan mengirim ID rule.
+  const manualRules = active.filter((r) => r.trigger === 'manual'
+    && (selectedDiscountIds || []).includes(r.id)
+    && ruleMatches(r, { date, timeZone, base: baseForGlobal, allowManual: true }));
   const chosen = [];
-  let applied = [];
 
   for (const rule of [...autoRules, ...manualRules]) {
     if (chosen.some((c) => c.id === rule.id)) continue;
     if (rule.kind !== 'fixed' && rule.kind !== 'percent') continue;
-    const scoped = scopeBase(rule, outLines, baseForGlobal);
-    const val = discountValue(rule, scoped);
-    if (val > 0) { chosen.push({ id: rule.id, name: rule.name, kind: rule.kind, value: rule.value, amount: val, scope: rule.applies_to }); }
+    const indexes = scopeLineIndexes(rule, outLines);
+    const scoped = scopeBase(rule, outLines);
+    const amount = discountValue(rule, scoped);
+    if (amount > 0) chosen.push({ id: rule.id, name: rule.name, kind: rule.kind, value: rule.value, amount, scope: rule.applies_to || 'global', targetIndexes: indexes });
   }
-  if (chosen.length > 1 && !chosen.every((c) => (active.find((r) => r.id === c.id) || {}).stackable)) {
-    applied = [chosen.reduce((a, b) => (b.amount > a.amount ? b : a))];
-  } else {
-    applied = chosen;
-  }
-  const globalDiscount = round0(Math.min(baseForGlobal, applied.reduce((s, c) => s + c.amount, 0)));
 
+  let selected = chosen;
+  if (chosen.length > 1 && !chosen.every((c) => (active.find((r) => r.id === c.id) || {}).stackable)) {
+    selected = [chosen.reduce((a, b) => (b.amount > a.amount ? b : a))];
+  }
+
+  // Alokasikan diskon ke baris yang memang masuk cakupan. Ini menjaga diskon item/kategori
+  // agar tidak menurunkan dasar pajak barang lain, dan mencegah diskon bertumpuk melebihi
+  // nilai baris yang memenuhi syarat.
+  const remainingByLine = outLines.map((line) => Math.max(0, round0(line.line_total)));
+  const globalDiscountByLine = outLines.map(() => 0);
+  const applied = [];
+  for (const rule of selected) {
+    const indexes = rule.targetIndexes || scopeLineIndexes(rule, outLines);
+    const available = round0(indexes.reduce((sum, i) => sum + remainingByLine[i], 0));
+    let remainingAmount = Math.min(rule.amount, available);
+    if (remainingAmount <= 0 || available <= 0) continue;
+    const amountBeforeAllocation = remainingAmount;
+    const eligible = indexes.filter((i) => remainingByLine[i] > 0);
+
+    eligible.forEach((index, position) => {
+      if (remainingAmount <= 0) return;
+      const proposed = position === eligible.length - 1
+        ? remainingAmount
+        : round0(amountBeforeAllocation * remainingByLine[index] / available);
+      const part = Math.min(remainingByLine[index], proposed, remainingAmount);
+      globalDiscountByLine[index] = round0(globalDiscountByLine[index] + part);
+      remainingByLine[index] = round0(remainingByLine[index] - part);
+      remainingAmount = round0(remainingAmount - part);
+    });
+
+    // Serap residu pembulatan pada baris mana pun yang masih punya sisa dasar.
+    for (const index of eligible) {
+      if (remainingAmount <= 0) break;
+      const part = Math.min(remainingByLine[index], remainingAmount);
+      globalDiscountByLine[index] = round0(globalDiscountByLine[index] + part);
+      remainingByLine[index] = round0(remainingByLine[index] - part);
+      remainingAmount = round0(remainingAmount - part);
+    }
+    const appliedAmount = round0(amountBeforeAllocation - remainingAmount);
+    if (appliedAmount > 0) applied.push({
+      id: rule.id, name: rule.name, kind: rule.kind, value: rule.value,
+      amount: appliedAmount, scope: rule.scope,
+    });
+  }
+  const globalDiscount = round0(applied.reduce((sum, rule) => sum + rule.amount, 0));
   const net = round0(baseForGlobal - globalDiscount);
 
   // ---- service charge ----------------------------------------------------
@@ -144,12 +231,15 @@ export function calculatePrice({
 
   // ---- pajak -------------------------------------------------------------
   let taxTotal = 0;
-  if (cfg.enabled) {
-    const weighted = outLines.reduce((s, l) => s + (taxableBase ? (l.tax_base / (baseForGlobal || 1)) : 0) * l.tax_rate, 0);
-    const rate = baseForGlobal > 0 ? weighted : (outLines[0]?.tax_rate ?? 0);
-    taxTotal = cfg.inclusive
-      ? round0(taxableBase - taxableBase / (1 + (rate || 0) / 100))
-      : round0(taxableBase * (rate || 0) / 100);
+  if (cfg.enabled && net > 0) {
+    const serviceFactor = taxableBase / net; // biaya layanan dialokasikan proporsional per baris
+    taxTotal = round0(outLines.reduce((sum, line, index) => {
+      const netLine = Math.max(0, round0(line.tax_base - globalDiscountByLine[index]));
+      const grossLine = netLine * serviceFactor;
+      const rate = Number(line.tax_rate) || 0;
+      if (cfg.inclusive) return sum + (rate ? grossLine - grossLine / (1 + rate / 100) : 0);
+      return sum + grossLine * rate / 100;
+    }, 0));
   }
 
   const preRound = round0(taxableBase + (cfg.inclusive ? 0 : taxTotal));
@@ -189,17 +279,38 @@ export function calculatePrice({
   };
 }
 
-/** Dasar pengenaan diskon global/category/item (sederhana namun bisa dipahami kasir). */
-function scopeBase(rule, lines, baseForGlobal) {
-  if (rule.applies_to === 'global' || !rule.ref_ids) return baseForGlobal;
-  let ids = [];
-  try { ids = JSON.parse(rule.ref_ids); } catch { ids = []; }
-  if (!Array.isArray(ids) || !ids.length) return baseForGlobal;
+/** ID cakupan dapat datang sebagai array API maupun JSON dari tabel SQLite. */
+function referenceIds(value) {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value !== 'string' || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch { return []; }
+}
+
+/** Baris yang masuk cakupan diskon. Cakupan kosong/invalid ditolak tertutup (tidak global). */
+function scopeLineIndexes(rule, lines) {
+  const scope = rule.applies_to || 'global';
+  if (scope === 'global') return lines.map((_line, index) => index);
+  if (scope !== 'item' && scope !== 'category') return [];
+  const ids = referenceIds(rule.ref_ids);
+  if (!ids.length) return [];
   const set = new Set(ids);
-  const match = rule.applies_to === 'item'
-    ? lines.filter((l) => set.has(l.item_id))
-    : lines; // kategori: sudah difilter pemanggil bila perlu
-  return round0(match.reduce((s, l) => s + l.line_base - l.line_discount, 0));
+  return lines.reduce((indexes, line, index) => {
+    const id = scope === 'item' ? line.item_id : line.category_id;
+    if (id != null && set.has(String(id))) indexes.push(index);
+    return indexes;
+  }, []);
+}
+
+/** Dasar pengenaan diskon global/category/item. */
+function scopeBase(rule, lines) {
+  const indexes = scopeLineIndexes(rule, lines);
+  return round0(indexes.reduce((sum, index) => {
+    const line = lines[index];
+    return sum + Math.max(0, Number(line.line_base) - Number(line.line_discount));
+  }, 0));
 }
 
 /** Estimasi HPP dari BOM (dipakai untuk proyeksi laba per item). */
