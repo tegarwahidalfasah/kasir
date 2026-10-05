@@ -23,7 +23,7 @@ Layar **Kasir**:
 
 1. Cari lewat kolom `Cari barang / scan barcode…` (pemindai barcode bekerja karena input ini menerima ketikan cepat),
    atau ketuk kartu barang. Kartu produk menampilkan kapasitas yang masih bisa dilayani, mis. `maks 229`.
-2. **⚙ Pilihan** pada baris keranjang: addon/topping + diskon baris. **👤** untuk nama pelanggan & tipe pesanan.
+2. **⚙ Pilihan** pada baris keranjang: addon/topping; potongan nominal bebas per baris hanya untuk pemilik/manajer dengan `setting.tax`. Kasir tetap dapat memilih promo yang sudah dikonfigurasi. **👤** untuk nama pelanggan & tipe pesanan.
 3. Panel keranjang menampilkan **proyeksi potongan bahan** (mis. `2 pcs Dough Croissant Beku · 25.2 gr Mentega Tawar`).
    Bila bahan tidak cukup, tombol **Bayar** otomatis tidak aktif.
 4. **Bayar** → pilih metode → untuk tunai, **Uang diterima** terisi total (tombol cepat 10rb/20rb/50rb/100rb), kembalian dihitung.

@@ -39,7 +39,7 @@ router.get(MOUNT + '/pos/catalog', auth(['item.view', 'sale.create', 'stock.view
 router.post(MOUNT + '/pos/preview', auth('sale.create'), http((req, res) => {
   const storeId = req.storeId;
   const catalog = catalogFor(storeId);
-  const lines = normalizeLines(req.body?.lines, catalog);
+  const lines = normalizeLines(req.body?.lines, catalog, { allowManualDiscount: canManageDiscounts(req) });
   const recipes = recipesFor(lines.map((l) => l.item_id));
   const taxCfg = loadSetting(storeId, 'tax', DEFAULTS.tax);
   const { taxes, discounts, methods } = activeRules(storeId);
@@ -47,7 +47,7 @@ router.post(MOUNT + '/pos/preview', auth('sale.create'), http((req, res) => {
   const pricing = calculatePrice({
     lines, catalog, taxConfig: taxCfg, taxes, discounts,
     selectedDiscountIds: req.body?.selected_discount_ids || [], paymentMethod: payment,
-    date: new Date(), paidAmount: req.body?.paid_amount ?? null,
+    date: new Date(), timeZone: req.timezone, paidAmount: req.body?.paid_amount ?? null,
   });
   const impact = planStockImpact({ lines, catalog, recipes });
   res.json({
@@ -66,7 +66,7 @@ router.post(MOUNT + '/sales', auth('sale.create'), http((req, res) => {
     const dup = firstRow(`SELECT id, invoice_no, status FROM transactions WHERE store_id = ? AND external_ref = ?`, storeId, externalRef);
     if (dup) return res.status(200).json({ ...getSale(storeId, dup.id), duplicated: true });
   }
-  const lines = normalizeLines(req.body?.lines, catalogFor(storeId));
+  const lines = normalizeLines(req.body?.lines, catalogFor(storeId), { allowManualDiscount: canManageDiscounts(req) });
   const result = tx(() => createSale({
     storeId,
     branchId: req.branchId,
@@ -119,7 +119,7 @@ router.get(MOUNT + '/pos/held', auth('sale.hold'), http((req, res) => res.json(
 
 router.post(MOUNT + '/pos/hold', auth('sale.hold'), http((req, res) => {
   const storeId = req.storeId;                 // sebelumnya tak dideklarasikan -> ReferenceError 500 (docs/11 §5)
-  const lines = normalizeLines(req.body?.lines, catalogFor(storeId));
+  const lines = normalizeLines(req.body?.lines, catalogFor(storeId), { allowManualDiscount: canManageDiscounts(req) });
   if (!lines.length) throw new AppError(400, 'Keranjang masih kosong — tidak ada order untuk ditahan');
   const name = nextHoldNo(storeId);
   const id = uid('hld');
@@ -147,18 +147,32 @@ router.delete(MOUNT + '/pos/hold/:id', auth('sale.hold'), http((req, res) => {
 }));
 
 // ------------------------------------------------------------------- helper
-function normalizeLines(lines, catalog = null) {
+function canManageDiscounts(req) {
+  const permissions = req.permissions || [];
+  return permissions.includes('*') || permissions.includes('setting.tax');
+}
+
+function normalizeLines(lines, catalog = null, { allowManualDiscount = false } = {}) {
   if (!Array.isArray(lines)) throw new AppError(400, 'Format keranjang tidak valid');
   return lines
-    .map((l) => ({
-      item_id: l.item_id,
-      qty: Math.max(0, Number(l.qty) || 0),
-      unit_price: l.unit_price != null ? Number(l.unit_price) : null,
-      discount: Number(l.discount) || 0,
-      // addon diverifikasi terhadap item_addons di DB (price_delta & bahan dari server, bukan klien)
-      addons: catalog ? resolveAddons(catalog, l.item_id, l.addons) : [],
-      selected_optional_raws: Array.isArray(l.selected_optional_raws) ? l.selected_optional_raws : [],
-    }))
+    .map((l) => {
+      const discount = Number(l.discount || 0);
+      if (!Number.isFinite(discount) || discount < 0) throw new AppError(400, 'Diskon baris tidak valid');
+      if (discount > 0 && !allowManualDiscount) {
+        throw new AppError(403, 'Butuh hak akses Pajak & diskon untuk memberi diskon nominal per baris');
+      }
+      return {
+        item_id: l.item_id,
+        qty: Math.max(0, Number(l.qty) || 0),
+        // Jangan pernah percaya harga dari browser/API. Harga jual selalu dibaca dari
+        // katalog server untuk pratinjau, penjualan, dan order tertahan.
+        unit_price: catalog?.[l.item_id] ? Number(catalog[l.item_id].selling_price) || 0 : null,
+        discount,
+        // addon diverifikasi terhadap item_addons di DB (price_delta & bahan dari server, bukan klien)
+        addons: catalog ? resolveAddons(catalog, l.item_id, l.addons) : [],
+        selected_optional_raws: Array.isArray(l.selected_optional_raws) ? l.selected_optional_raws : [],
+      };
+    })
     .filter((l) => l.item_id && l.qty > 0);
 }
 

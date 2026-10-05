@@ -279,7 +279,7 @@ export default function PosPage() {
                   </div>
                   <div className="row" style={{ gap: 2, justifyContent: 'flex-end' }}>
                     {(bom[item.id] || []).length > 0 || addons.length ? <IconButton label="Pilihan" onClick={() => setLineEditor({ i, line })}>⚙</IconButton> : null}
-                    <IconButton label="Diskon baris" onClick={() => setLineEditor({ i, line, tab: 'disc' })}>%</IconButton>
+                    {app.can('setting.tax') && <IconButton label="Diskon baris" onClick={() => setLineEditor({ i, line, tab: 'disc' })}>%</IconButton>}
                   </div>
                 </div>
               </div>
@@ -333,6 +333,7 @@ export default function PosPage() {
       <LineEditor
         state={lineEditor}
         catalog={catalogAll}
+        allowManualDiscount={app.can('setting.tax')}
         onClose={() => setLineEditor(null)}
         onSave={(i, patch) => {
           setCart((c) => c.map((l, idx) => (idx === i ? { ...l, ...patch } : l)));
@@ -384,21 +385,28 @@ export default function PosPage() {
 }
 
 // ------------------------------------------------------------------ sub-komponen
-function LineEditor({ state, catalog, onClose, onSave }) {
+function LineEditor({ state, catalog, onClose, onSave, allowManualDiscount = false }) {
   const [tab, setTab] = useState('addon');
   const [line, setLine] = useState(null);
-  useEffect(() => { if (state) { setLine(state.line); setTab(state.tab || 'addon'); } }, [state]);
+  useEffect(() => {
+    if (state) {
+      setLine(state.line);
+      setTab(allowManualDiscount && state.tab === 'disc' ? 'disc' : 'addon');
+    }
+  }, [state, allowManualDiscount]);
   if (!state || !line) return null;
   const item = catalog.find((c) => c.id === line.item_id) || {};
   const allAddons = item.addons || [];
   return (
     <Modal open onClose={onClose} title={item.name} width="440px" footer={<>
       <Button onClick={onClose}>Batal</Button>
-      <Button variant="primary" onClick={() => onSave(state.i, { addons: line.addons, discount: Number(line.discount) || 0 })}>Simpan</Button>
+      <Button variant="primary" onClick={() => onSave(state.i, allowManualDiscount
+        ? { addons: line.addons, discount: Number(line.discount) || 0 }
+        : { addons: line.addons })}>Simpan</Button>
     </>}>
       <div className="tabs" style={{ marginBottom: 10 }}>
         <button className={`tab ${tab === 'addon' ? 'active' : ''}`} onClick={() => setTab('addon')}>Tambahan</button>
-        <button className={`tab ${tab === 'disc' ? 'active' : ''}`} onClick={() => setTab('disc')}>Diskon baris</button>
+        {allowManualDiscount && <button className={`tab ${tab === 'disc' ? 'active' : ''}`} onClick={() => setTab('disc')}>Diskon baris</button>}
       </div>
       {tab === 'addon' && (allAddons.length ? (
         <div className="col">
@@ -418,7 +426,7 @@ function LineEditor({ state, catalog, onClose, onSave }) {
           <small className="muted">Tambahan yang memakai bahan baku ikut memotong stok gudang.</small>
         </div>
       ) : <p className="muted">Item ini tidak punya opsi tambahan.</p>)}
-      {tab === 'disc' && (
+      {tab === 'disc' && allowManualDiscount && (
         <Field label="Potongan nominal untuk baris ini (Rp)">
           <NumberInput value={line.discount || 0} step={500} min={0} onChange={(v) => setLine({ ...line, discount: Number(v) || 0 })} className="input input-money" />
         </Field>

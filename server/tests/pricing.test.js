@@ -6,9 +6,9 @@ import { describe, it, assert, standalone } from './harness.js';
 import { calculatePrice, applyRounding, ruleMatches, discountValue } from '../src/pricing.js';
 
 const catalog = {
-  a: { name: 'Kopi', item_type: 'finished', selling_price: 18000, cost_price: 4000, tax_mode: 'inherit' },
-  b: { name: 'Air', item_type: 'finished', selling_price: 5000, cost_price: 1000, tax_mode: 'exempt' },
-  c: { name: 'Kue', item_type: 'finished', selling_price: 12000, cost_price: 7000, tax_mode: 'override', tax_rate: 5 },
+  a: { name: 'Kopi', item_type: 'finished', category_id: 'drinks', selling_price: 18000, cost_price: 4000, tax_mode: 'inherit' },
+  b: { name: 'Air', item_type: 'finished', category_id: 'drinks', selling_price: 5000, cost_price: 1000, tax_mode: 'exempt' },
+  c: { name: 'Kue', item_type: 'finished', category_id: 'pastry', selling_price: 12000, cost_price: 7000, tax_mode: 'override', tax_rate: 5 },
 };
 const TAX = [{ id: 't1', name: 'PPn', rate_pct: 11, is_default: 1, is_inclusive: 0 }];
 
@@ -49,13 +49,62 @@ describe('pricing', () => {
     assert.equal(no.discount_lines.length, 0, 'tidak boleh apply di bawah minimum');
   });
 
-  it('diskon manual hanya aktif bila dipilih kasir', () => {
+  it('diskon barang tertentu hanya mengurangi barang yang masuk ref_ids (array dari DB)', () => {
+    const rule = { id: 'item-only', name: 'Kopi 10%', kind: 'percent', value: 10, applies_to: 'item', ref_ids: ['a'], trigger: 'auto_min_subtotal', min_subtotal: 0, is_active: 1, stackable: 0 };
+    const r = calculatePrice({
+      lines: [{ item_id: 'a', qty: 1 }, { item_id: 'b', qty: 1 }], catalog, taxes: [], discounts: [rule],
+      taxConfig: { enabled: false, rounding_mode: 'none' },
+    });
+    assert.equal(r.discount_total, 1800, 'hanya Kopi Rp18.000 yang didiskon');
+    assert.equal(r.grand_total, 21200, 'Air Rp5.000 tidak ikut diskon');
+    assert.deepEqual(r.discount_lines[0].targetIndexes, undefined, 'indeks internal tidak bocor ke ringkasan promo');
+
+    // Cakupan kosong/invalid harus gagal tertutup, bukan dianggap diskon global.
+    const invalid = calculatePrice({
+      lines: [{ item_id: 'a', qty: 1 }], catalog, taxes: [],
+      discounts: [{ ...rule, ref_ids: [] }], taxConfig: { enabled: false, rounding_mode: 'none' },
+    });
+    assert.equal(invalid.discount_total, 0);
+    assert.equal(invalid.grand_total, 18000);
+  });
+
+  it('diskon kategori hanya berlaku di kategori terpilih dan pajak mengikuti baris sesudah diskon', () => {
+    const rule = { id: 'pastry-only', name: 'Pastry 10%', kind: 'percent', value: 10, applies_to: 'category', ref_ids: ['pastry'], trigger: 'auto_min_subtotal', min_subtotal: 0, is_active: 1, stackable: 0 };
+    const r = calculatePrice({
+      lines: [{ item_id: 'a', qty: 1 }, { item_id: 'c', qty: 1 }], catalog, taxes: TAX, discounts: [rule],
+      taxConfig: { enabled: true, rounding_mode: 'none' },
+    });
+    assert.equal(r.discount_total, 1200, 'diskon hanya 10% dari Kue Rp12.000');
+    assert.equal(r.tax_total, 2520, 'pajak 11% Kopi + 5% Kue setelah diskon');
+    assert.equal(r.grand_total, 31320);
+  });
+
+  it('promo hari, jam, dan periode mengikuti zona waktu bisnis toko', () => {
+    const instant = new Date('2026-10-05T18:30:00Z'); // Selasa 01:30 di Asia/Jakarta, Senin 18:30 UTC
+    assert.equal(ruleMatches({ trigger: 'auto_weekday', days: '[2]', is_active: 1 }, { date: instant, timeZone: 'Asia/Jakarta' }), true);
+    assert.equal(ruleMatches({ trigger: 'auto_weekday', days: '[2]', is_active: 1 }, { date: instant, timeZone: 'UTC' }), false);
+    assert.equal(ruleMatches({ trigger: 'auto_time', start_time: '00:00', end_time: '02:00', is_active: 1 }, { date: instant, timeZone: 'Asia/Jakarta' }), true);
+    assert.equal(ruleMatches({ trigger: 'auto_time', start_time: '00:00', end_time: '02:00', is_active: 1 }, { date: instant, timeZone: 'UTC' }), false);
+    assert.equal(ruleMatches({ trigger: 'auto_min_subtotal', min_subtotal: 0, valid_from: '2026-10-06', is_active: 1 }, { date: instant, timeZone: 'Asia/Jakarta', base: 100 }), true);
+    assert.equal(ruleMatches({ trigger: 'auto_min_subtotal', min_subtotal: 0, valid_from: '2026-10-06', is_active: 1 }, { date: instant, timeZone: 'UTC', base: 100 }), false);
+  });
+
+  it('diskon manual hanya aktif bila dipilih; ID promo otomatis tidak bisa memaksa jadwal', () => {
     const rules = [{ id: 'dm', name: 'Manual', kind: 'fixed', value: 2000, applies_to: 'global', trigger: 'manual', is_active: 1 }];
     const a = calculatePrice({ lines: [{ item_id: 'a', qty: 1 }], catalog, taxes: [], discounts: rules, taxConfig: { rounding_mode: 'none' } });
     assert.equal(a.discount_total, 0);
     const b = calculatePrice({ lines: [{ item_id: 'a', qty: 1 }], catalog, taxes: [], discounts: rules, selectedDiscountIds: ['dm'], taxConfig: { rounding_mode: 'none' } });
     assert.equal(b.discount_total, 2000);
     assert.equal(b.grand_total, 16000);
+
+    const scheduled = calculatePrice({
+      lines: [{ item_id: 'a', qty: 1 }], catalog, taxes: [],
+      discounts: [{ id: 'happy-hour', kind: 'fixed', value: 5000, applies_to: 'global', trigger: 'auto_time', start_time: '15:00', end_time: '17:00', is_active: 1 }],
+      selectedDiscountIds: ['happy-hour'], date: new Date('2026-10-05T12:00:00Z'), timeZone: 'UTC',
+      taxConfig: { enabled: false, rounding_mode: 'none' },
+    });
+    assert.equal(scheduled.discount_total, 0, 'ID promo otomatis tidak mem-bypass jadwal waktu');
+    assert.equal(scheduled.grand_total, 18000);
   });
 
   it('max_discount membatasi diskon persen', () => {

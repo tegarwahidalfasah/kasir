@@ -17,7 +17,7 @@ Dibaca lewat `GET /api/bootstrap` (`settings.*`) atau `GET /api/settings`, disim
 |---|---|---|
 | `name` | `Toko Saya` | header aplikasi, sidebar, baris pertama struk, laporan |
 | `legal_name`, `address`, `phone`, `email`, `npwp` | kosong | struk (dapat disentuh per baris lewat `receipt.show`) |
-| `timezone` | `Asia/Jakarta` | pelaporan harian (`date(created_at)` dihitung waktu server) |
+| `timezone` | `Asia/Jakarta` | hari bisnis, laporan, nomor struk/PO, filter tanggal, dan jadwal promo |
 | `currency` · `locale` | `IDR` · `id-ID` | format Rp di `client/src/lib/format.js` |
 | `logo_data_url` | `null` | logo di layar & struk (UNGGAH lewat `POST /api/branding/logo`, hapus `DELETE /api/branding/logo`) |
 | `invoice_prefix` | `INV` | nomor struk: `{prefix}{YYYYMMDD}-{nomor}` |
@@ -104,7 +104,7 @@ Tabel `discounts` = aturan yang bisa dihidupkan/matikan dari layar **Pengaturan 
 | `applies_to` · `ref_ids` | `item` · `["itm…"]` | `global`, per `category`, atau per `item` |
 | `trigger` | `auto_min_subtotal` | `manual` (kasir memilih), `auto_weekday`, `auto_time`, `auto_min_subtotal` |
 | `days` | `[6,0]` | hari aktif (0 = Minggu … 6 = Sabtu), JSON array |
-| `start_time` · `end_time` | `11:00` · `14:00` | jendela jam (pakai waktu server) |
+| `start_time` · `end_time` | `11:00` · `14:00` | jendela jam berdasarkan zona waktu bisnis toko (`settings.store.timezone`) |
 | `min_subtotal` | `50000` | baru aktif bila subtotal ≥ nilai |
 | `max_discount` | `20000` | batas nominal diskon |
 | `stackable` | `0` | `0` = tidak boleh digabung (yang terbesar dipakai) |

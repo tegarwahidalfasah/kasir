@@ -41,7 +41,7 @@ Detail tiap fase ada di folder [`docs/`](docs/).
 
 | Lapisan | Pilihan | Alasan |
 |---|---|---|
-| Runtime & API | **Node.js ≥ 22.5** + Express 5 | Satu bahasa (JS) di seluruh stack; LTS aktif |
+| Runtime & API | **Node.js ≥ 22.12** + Express 5 | Satu bahasa (JS) di seluruh stack; toolchain Vite 8 juga didukung |
 | Database | **SQLite lokal** (`node:sqlite`) atau **Turso/libSQL** (`@libsql/client/http`) | Lokal/VPS memakai file persisten; Vercel memakai DB bersama melalui HTTP dengan transaksi write. Lihat [docs/12](docs/12-vercel-turso.md). |
 | Migrasi skema lokal | `schema.sql` idempoten (`CREATE … IF NOT EXISTS`) + **migrasi aditif kolom** (`migrateSchema()` di `server/src/db/index.js`) | Skema adalah sumber kebenaran & aman dijalankan berulang saat startup; kolom baru pada DB lama ditambahkan otomatis (`ALTER TABLE … ADD COLUMN`) tanpa alat terpisah. Belum ada migrasi bernomor/rollback atau perubahan yang membangun ulang tabel (lihat [docs/01](docs/01-arsitektur.md) §7) |
 | Web frontend | **React 18 + Vite** (SPA) | Build cepat, dev server dengan proxy `/api`, cocok untuk UI interaktif seperti POS |

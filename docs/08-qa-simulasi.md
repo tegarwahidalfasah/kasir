@@ -4,9 +4,9 @@ Tiga lapisan pengujian, semuanya jalan tanpa dependency tambahan dan **tanpa men
 (masing-masing membuat `KASIR_DATA_DIR` sementara sendiri).
 
 ```bash
-npm test          # unit + integrasi: 85 tes (API 36 · runtime/boot 6 · zona waktu 6 · pricing 16 · stok/BOM 21) · ±12 s
-npm run test:ui   # smoke UI (jsdom + React nyata) 32 pemeriksaan · ±27 s
-npm run test:qa   # QA transaksi massal: 20 pemeriksaan · ±10 s (400 struk) — lihat juga §7 (putaran ketujuh)
+npm test          # unit + integrasi: 108 tes (API 37 · datetime 6 · preview setup 8 · pricing 19 · remote 11 · runtime 6 · stok/BOM 21)
+npm run test:ui   # smoke UI (jsdom + React nyata) 38 pemeriksaan
+npm run test:qa   # QA transaksi massal: 20 pemeriksaan (400 struk) — lihat juga §7 (putaran ketujuh)
 npm run check     # npm test + test:ui + build client
 ```
 

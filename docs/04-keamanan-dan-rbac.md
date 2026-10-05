@@ -82,6 +82,7 @@ Ancaman yang dijaga di v0.1.0:
   `tax` → `setting.tax`, `receipt` → `setting.receipt`, `theme` → `setting.theme`). Sebelumnya hak `setting.store`
   adalah kunci master: pemiliknya bisa menurunkan PPN atau mengganti tema (docs/11 §7).
   `report.export` untuk unduh CSV, `system.maintenance` untuk integritas/rekonsiliasi/cadangan.
+* Diskon nominal bebas per baris juga memerlukan `setting.tax` (pemilik/manajer secara default); kasir tetap dapat memilih promo yang sudah dikonfigurasi. Harga dasar transaksi selalu diambil dari katalog server, bukan payload klien.
 * **Larangan lintas toko**: `GET /api/users/:id` dsb. tidak ada; semua lookup memakai `WHERE id = ? AND store_id = ?`
   → 404, bukan 403, supaya tidak membocorkan keberadaan id milik tenant lain.
 * **Perubahan peran & password dicatat**: `audit_logs` (`user.create`, `user.update`, `user.password`, `role.update`) dan dapat diunduh (lihat §6).
